@@ -425,8 +425,6 @@ window.addEventListener('load', main);
         
         offset = offset << _heapAccessShiftForWebGPUHeap(heap);
         this._totalData += length;
-        //console.log("#### DATA[", this._frameIndex, "]", length, "Total:", this._totalData);
-        //console.log("  VIEW:", heap.byteLength, offset, length);
         let view = new Uint8Array(heap.buffer ?? heap, offset, length);
 
         let cacheIndex = -1;
