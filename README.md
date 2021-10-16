@@ -1,9 +1,9 @@
 # WebGPURecorder
 
-Debugging tool for WebGPU. It records all WebGPU commands, buffers, and textures
-and generates a recording HTML file with those commands that will play back the
-recording. This can be used to diagnose issues with WebGPU rendering by
-eliminating everything but the raw WebGPU commands.
+Debugging tool for WebGPU. It records all WebGPU commands, buffers, and textures,
+generating a HTML file with javascript to play back the recording.
+This can be used to diagnose issues with WebGPU rendering by eliminating everything but the raw
+WebGPU commands.
 
 ## Usage
 

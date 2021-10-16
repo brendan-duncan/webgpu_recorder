@@ -204,7 +204,6 @@ window.addEventListener('load', main);
     },
 
     _downloadFile: function(data, filename) {
-        //console.log(data);
         const link = document.createElement('a');
         link.href = URL.createObjectURL(new Blob([data], {type: 'application/javascript'}));
         link.download = filename;
@@ -341,6 +340,7 @@ window.addEventListener('load', main);
                 }
                 // Call the original unmap
                 let result = origMethod.call(object, ...arguments);
+                // Don't record the unmap command
                 return result;
             }
             let result = origMethod.call(object, ...arguments);
