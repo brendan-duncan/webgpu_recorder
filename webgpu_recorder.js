@@ -95,7 +95,7 @@ var WebGPURecorder = {
     <body style="text-align: center;">
         <canvas id="#webgpu" width=${this.config.canvasWidth} height=${this.config.canvasHeight}></canvas>
         <script>
-let D = [];
+let D = new Array(${this._arrayCache.length});
 async function main() {
   let canvas = document.getElementById("#webgpu");
   let frameLabel = document.createElement("div");
@@ -177,20 +177,17 @@ function decodeBase64(str) {
     return result.subarray(0, result.length - missingOctets);
 }
 
-function B64ToA(aType, s) {
+function B64ToA(s) {
     let x = decodeBase64(s);
-    return new aType(x.buffer, 0, x.length / aType.BYTES_PER_ELEMENT);
+    return new Uint8Array(x.buffer, 0, x.length);
 }\n`;
-    s += "D = [\n";
     for (let ai = 0; ai < this._arrayCache.length; ++ai) {
-        if (ai != 0) s += ",";
         let a = this._arrayCache[ai];
         let b64 = this._arrayToBase64(a.array);
-
-        s += 'B64ToA(' + a.type + ', "' + b64 + '")\n';
+        s += `D[${ai}] = B64ToA("${b64}");\n`;
     }
-    s += `];
 
+s += `
 window.addEventListener('load', main);
         </script>
     </body>
@@ -402,7 +399,10 @@ window.addEventListener('load', main);
 
     _stringifyObject: function(object) {
         let s = "{";
+        let first = true;
         for (let key in object) {
+            if (!first) s += ",";
+            first = false;
             s += `"${key}":`;
             let value = object[key];
             if (value === undefined) {
@@ -422,7 +422,6 @@ window.addEventListener('load', main);
             } else {
                 s += `${value}`;
             }
-            s += ",";
         }
         s += "}";
         return s;
