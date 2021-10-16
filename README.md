@@ -1,9 +1,12 @@
-# WebGPURecorder
+# WebGPU Recorder
 
-Debugging tool for WebGPU. It records all WebGPU commands, buffers, and textures,
-generating a HTML file with javascript to play back the recording.
-This can be used to diagnose issues with WebGPU rendering by eliminating everything but the raw
-WebGPU commands.
+WebGPU Recorder is a debugging tool for WebGPU.
+
+It captures all WebGPU commands, buffers, and textures, over a given number of frames.
+It will then generate an HTML file containing javascript with all of the WebGPU commands recorded.
+This generated HTML file can be opened in the browser to play back the recording.
+
+This can be used to diagnose issues with WebGPU rendering by eliminating everything but the raw WebGPU commands.
 
 ## Usage
 
@@ -16,10 +19,11 @@ WebGPU commands.
 ## Play The Recording
 
 * Open the downloaded HTML file in a WebGPU capable browser to play back the recording.
+* It's a self-contained HTML file so you don't need a local server to view it.
 
-## Recording Settings
+## Recorder Settings
 
-You can change the default configuration of the WebGPURecorder by adding the following to your HTML file.
+You can change the default configuration of the WebGPU Recorder by adding the following to your HTML file.
 
 ```html
 <script id="webgpu_recorder" type="application/json">{
@@ -35,9 +39,14 @@ You can change the default configuration of the WebGPURecorder by adding the fol
 * **width** is the width of the canvas in the recording. This should match the width of the original canvas.
 * **height** is the height of the canvas in the recording. This should match the height of the original canvas.
 
+***
+*A recording of an animated, textured cube:*
 ![Recording Screenshot](test/test2.png)
+![Recording Code](test/test2_code.png)
 
-## TODO
+***
+
+### TODO
 
 * Figure out a way to start recording from an arbitrary frame and continue recording until you
 pause, similar to Spector.js. Because objects like buffers and textures may be created or
