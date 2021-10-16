@@ -41,6 +41,7 @@ You can change the default configuration of the WebGPU Recorder by adding the fo
 
 ***
 *A recording of an animated, textured cube:*
+
 ![Recording Screenshot](test/test2.png)
 ![Recording Code](test/test2_code.png)
 
