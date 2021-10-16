@@ -1,42 +1,11 @@
 var WebGPURecorder = {
+// public:
     config: {
         maxFrameCount: 100,
         exportName: "WebGPURecord",
         canvasWidth: 800,
         canvasHeight: 600
     },
-
-    _objectIndex: 1,
-    _startFrameObjectIndex: 1,
-    _initalized: false,
-    _initializeCommands: [],
-    _frameCommands: [],
-    _currentFrameCommands: null,
-    _frameIndex: -1,
-    _isRecording: false,
-    _frameVariables: {},
-    _asyncMethods: [
-        "requestAdapter",
-        "requestDevice",
-        "createComputePipelineAsync",
-        "createRenderPipelineAsync"
-    ],
-
-    _skipMethods: [
-        "toString",
-        "entries",
-        "getContext",
-        "forEach",
-        "has",
-        "keys",
-        "values",
-        "getPreferredFormat",
-        "pushErrorScope",
-        "popErrorScope"
-    ],
-    _queue: null,
-    _arrayCache: [],
-    _totalData: 0,
 
     initialize: function() {
         if (!navigator.gpu || this._initalized)
@@ -53,23 +22,55 @@ var WebGPURecorder = {
         this._registerObject(navigator.gpu);
         this._recordLine(`${this._getObjectVariable(navigator.gpu)} = navigator.gpu;`);
 
-        this._intializeCanvases();
+        this._wrapCanvases();
 
         this._wrapObject(navigator.gpu);
 
         let self = this;
-        window.__requestAnimationFrame = window.requestAnimationFrame;
+        let __requestAnimationFrame = window.requestAnimationFrame;
         window.requestAnimationFrame = function(cb) {
             function callback() {
-                self.frameStart();
+                self._frameStart();
                 cb(performance.now());
-                self.frameEnd();
+                self._frameEnd();
             }
-            window.__requestAnimationFrame(callback);
+            __requestAnimationFrame(callback);
         };
     },
 
-    frameStart: function() {
+// private:
+    _objectIndex: 1,
+    _startFrameObjectIndex: 1,
+    _initalized: false,
+    _initializeCommands: [],
+    _frameCommands: [],
+    _currentFrameCommands: null,
+    _frameIndex: -1,
+    _isRecording: false,
+    _frameVariables: {},
+    _asyncMethods: [
+        "requestAdapter",
+        "requestDevice",
+        "createComputePipelineAsync",
+        "createRenderPipelineAsync"
+    ],
+    _skipMethods: [
+        "toString",
+        "entries",
+        "getContext",
+        "forEach",
+        "has",
+        "keys",
+        "values",
+        "getPreferredFormat",
+        "pushErrorScope",
+        "popErrorScope"
+    ],
+    _queue: null,
+    _arrayCache: [],
+    _totalData: 0,
+
+    _frameStart: function() {
         this._frameIndex++;
         this._frameVariables[this._frameIndex] = new Set();
         if (this._frameIndex == 0) {
@@ -81,14 +82,14 @@ var WebGPURecorder = {
         this._frameCommands.push(this._currentFrameCommands);
     },
 
-    frameEnd: function() {
+    _frameEnd: function() {
         if (this._frameIndex == this.config.maxFrameCount) {
             this._isRecording = false;
-            this.generateOutput();
+            this._generateOutput();
         }
     },
 
-    generateOutput: function() {
+    _generateOutput: function() {
         let s = 
 `<html>
     <body style="text-align: center;">
@@ -240,7 +241,7 @@ window.addEventListener('load', main);
         document.body.removeChild(link);
     },
 
-    _intializeCanvases: function() {
+    _wrapCanvases: function() {
         let self = this;
         let canvases = document.getElementsByTagName('canvas');
         for (let i = 0; i < canvases.length; ++i) {
@@ -351,38 +352,34 @@ window.addEventListener('load', main);
         let origMethod = object[method];
         let self = this;
         object[method] = function() {
-            // We can't track changes to mapped data because it's just a regular JS array buffer and
-            // any JS process can modify that data. So in the recording, we convert createBuffer
-            // mappedAtCreation to false, keep track of mapped buffers from the getMappedRange
-            // method and don't record that, and we don't record unmap and instead make a copy of
-            // the data in the getMappedRange buffers and update the WebGPU state with
-            // device.queue.writeBuffer.
-            if (method == "getMappedRange") {
-                let result = origMethod.call(object, ...arguments);
-                if (!object.__mappedRanges)
-                    object.__mappedRanges = [];
-                // Keep track of the mapped ranges for the buffer object.
-                object.__mappedRanges.push(result);
-                // Don't record the getMappedRange call.
-                return result;
-            } else if (method == "unmap") {
+            // We can't track every change made to a mappedRange buffer since that all happens 
+            // outside the scope of what WebGPU is in control of. So we keep track of all the
+            // mapped buffer ranges, and when unmap is called, we record the content of their data
+            // so that they have their correct data for the unmap.
+            if (method == "unmap") {
                 if (object.__mappedRanges) {
                     for (let buffer of object.__mappedRanges) {
-                        // Make a copy of the getMappedRange buffer data as it is when unmap
+                        // Make a copy of the mappedRange buffer data as it is when unmap
                         // is called.
                         let cacheIndex = self._getDataCache(buffer, buffer.byteOffset, buffer.byteLength);
-                        // Generate a queue.writeBuffer method to update the buffer object with that
-                        // recorded data, instead of using the unmap method.
-                        self._recordLine(`${self._getObjectVariable(self._queue)}.writeBuffer(${self._getObjectVariable(object)}, 0, D[${cacheIndex}].buffer, 0, D[${cacheIndex}].byteLength);`);
+                        // Set the mappedRange buffer data in the recording to what is in the buffer
+                        // at the time unmap is called.
+                        self._recordLine(`new Uint8Array(${self._getObjectVariable(buffer)}).set(D[${cacheIndex}]);`);
                     }
                     delete object.__mappedRanges;
                 }
-                // Call the original unmap
-                let result = origMethod.call(object, ...arguments);
-                return result;
             }
+
             let result = origMethod.call(object, ...arguments);
             self._recordCommand(false, object, method, result, arguments);
+
+            // Keep track of the mapped ranges for the buffer object. The recording will set their
+            // data when unmap is called.
+            if (method == "getMappedRange") {
+                if (!object.__mappedRanges)
+                    object.__mappedRanges = [];
+                object.__mappedRanges.push(result);
+            }
             return result;
         };
     },
@@ -438,6 +435,7 @@ window.addEventListener('load', main);
         s += "]";
         return s;
     },
+
 
     _getDataCache: function(heap, offset, length) {
         let self = this;
@@ -508,16 +506,6 @@ window.addEventListener('load', main);
             args[2].offset = 0;
         } else if (method == "setBindGroup") {
             args.length = 2; // TODO: support dynamic offsets
-        } else if (method == "createBuffer") {
-            if (args[0].mappedAtCreation) {
-                args[0] = { ...args[0] }; // clone args[0]
-                args[0].mappedAtCreation = false;
-                // Make sure the buffer can be copied to since we're replacing mappedAtCreation 
-                // with a call to writeBuffer.
-                // eslint-disable-next-line no-undef
-                args[0].usage = (args[0].usage ?? 0) | GPUBufferUsage.COPY_DST;
-
-            }
         }
 
         let argStrings = [];
