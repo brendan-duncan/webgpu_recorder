@@ -7,6 +7,7 @@ var WebGPURecorder = {
     _currentFrameCommands: null,
     _frameIndex: -1,
     _isRecording: false,
+    _frameVariables: {},
 
     config: {
         maxFrameCount: 100,
@@ -24,9 +25,11 @@ var WebGPURecorder = {
         this._frameIndex = -1;
         this._frameCommands = [];
         this._initializeCommands = [];
+        this._frameVariables = {};
+        this._frameVariables[-1] = new Set();
 
         this._registerObject(navigator.gpu);
-        this._recordLine(`let ${this._getObjectVariable(navigator.gpu)} = navigator.gpu;`);
+        this._recordLine(`${this._getObjectVariable(navigator.gpu)} = navigator.gpu;`);
 
         this._intializeCanvases();
 
@@ -46,6 +49,7 @@ var WebGPURecorder = {
 
     frameStart: function() {
         this._frameIndex++;
+        this._frameVariables[this._frameIndex] = new Set();
         if (this._frameIndex == 0) {
             this._startFrameObjectIndex = this._objectIndex;
         } else {
@@ -74,9 +78,11 @@ async function main() {
   let frameLabel = document.createElement("div");
   frameLabel.style = "position: absolute; top: 10px; left: 10px; font-size: 24pt; color: #f00;";
   document.body.append(frameLabel);
+  ${this._getVariableDeclarations(-1)}
   ${this._initializeCommands.join("\n  ")}\n`;
 for (let fi = 0, fl = this._frameCommands.length; fi < fl; ++fi) {
-    s += `function f${fi}() {
+        s += `function f${fi}() {
+  ${this._getVariableDeclarations(fi)}
   ${this._frameCommands[fi].join("\n  ")}
 }\n`;
 }
@@ -236,18 +242,50 @@ window.addEventListener('load', main);
     _registerObject: function(object) {
         let id = this._objectIndex++;
         object.__id = id;
-        object.toString = function() {
-            return `x${id}`;
-        };
+        object.__frame = this._frameIndex;
+    },
+
+    _isFrameVariable: function(frame, name) {
+        return this._frameVariables[frame] && this._frameVariables[frame].has(name);
+    },
+
+    _removeVariable: function(name) {
+        for (let f in this._frameVariables) {
+            let fs = this._frameVariables[f];
+            fs.delete(name);
+        }
+    },
+
+    _addVariable: function(frame, name) {
+        this._frameVariables[frame].add(name);
+    },
+
+    _getVariableDeclarations: function(frame) {
+        let s = this._frameVariables[frame];
+        if (!s.size) return "";
+        return `let ${[...s].join(",")};`;
     },
 
     _getObjectVariable: function(object) {
-        return `x${object.__id||0}`;
+        if (object.__id === undefined)
+            this._registerObject(object);
+
+        let name = `x${object.__id||0}`;
+
+        if (this._frameIndex != object.__frame) {
+            if (!this._isFrameVariable(-1, name)) {
+                this._removeVariable(name);
+                this._addVariable(-1, name);
+            }
+        } else {
+            this._addVariable(this._frameIndex, name);
+        }
+
+        return name;
     },
 
     _wrapContext: function(ctx) {
-        this._registerObject(ctx);
-        this._recordLine(`let ${this._getObjectVariable(ctx)} = canvas.getContext('webgpu');`);
+        this._recordLine(`${this._getObjectVariable(ctx)} = canvas.getContext('webgpu');`);
         this._wrapObject(ctx);
     },
 
@@ -266,7 +304,9 @@ window.addEventListener('load', main);
         "has",
         "keys",
         "values",
-        "getPreferredFormat"
+        "getPreferredFormat",
+        "pushErrorScope",
+        "popErrorScope"
     ],
 
     _objectHasMethods: function(object) {
@@ -298,8 +338,7 @@ window.addEventListener('load', main);
                     continue;
                 let hasMethod = this._objectHasMethods(o);
                 if (!o.__id && hasMethod) {
-                    this._registerObject(o);
-                    this._recordLine(`let ${this._getObjectVariable(o)} = ${this._getObjectVariable(object)}['${m}'];`);
+                    this._recordLine(`${this._getObjectVariable(o)} = ${this._getObjectVariable(object)}['${m}'];`);
                     this._wrapObject(o);
                 }
             }
@@ -340,7 +379,6 @@ window.addEventListener('load', main);
                 }
                 // Call the original unmap
                 let result = origMethod.call(object, ...arguments);
-                // Don't record the unmap command
                 return result;
             }
             let result = origMethod.call(object, ...arguments);
@@ -492,6 +530,8 @@ window.addEventListener('load', main);
                 argStrings.push(this._stringifyArray(a));
             } else if (typeof(a) == "object") {
                 argStrings.push(this._stringifyObject(a));
+            } else if (typeof(a) == "string") {
+                argStrings.push(`\`${a}\``);
             } else {
                 argStrings.push(a);
             }
@@ -516,14 +556,14 @@ window.addEventListener('load', main);
 
             async = async ? "await " : "";
 
-            if (result)
-                this._recordLine(`let ${this._getObjectVariable(result)} = ${async}${this._getObjectVariable(object)}.${method}(${this._getArgs(method, args)});`);
-            else
+            if (result) {
+                this._recordLine(`${this._getObjectVariable(result)} = ${async}${this._getObjectVariable(object)}.${method}(${this._getArgs(method, args)});`);
+            } else {
                 this._recordLine(`${async}${this._getObjectVariable(object)}.${method}(${this._getArgs(method, args)});`);
-
-            if (result && typeof(result) == "object") {
-                this._wrapObject(result);
             }
+
+            if (result && typeof(result) == "object")
+                this._wrapObject(result);
         }
     }
 };
