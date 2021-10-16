@@ -10,8 +10,8 @@ WebGPU commands.
 * Copy the file **webgpu_recorder.js** to your HTML project.
 * Add `<script src="webgpu_recorder.js"></script>` to your HTML (with the *src* path being where you copied *webgpu_recorder.js*).
 * Open the HTML in a browser that supports WebGPU, as you would normally.
-* The recording starts right away and record all subsequent frames.
-* The recording will automatically download as an HTML file after the maximum number of recorded frames have been recorded.
+* The recording starts right away and it will record all subsequent frames.
+* The recording will download automatically as an HTML file with embedded Javascript after the maximum number of frames have been recorded.
 
 ## Play The Recording
 
