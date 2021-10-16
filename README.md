@@ -35,6 +35,8 @@ You can change the default configuration of the WebGPURecorder by adding the fol
 * **width** is the width of the canvas in the recording. This should match the width of the original canvas.
 * **height** is the height of the canvas in the recording. This should match the height of the original canvas.
 
+![Recording Screenshot](test/test2.png)
+
 ## TODO
 
 * Figure out a way to start recording from an arbitrary frame and continue recording until you
