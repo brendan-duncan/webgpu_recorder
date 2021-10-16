@@ -1,4 +1,11 @@
 var WebGPURecorder = {
+    config: {
+        maxFrameCount: 100,
+        exportName: "WebGPURecord",
+        canvasWidth: 800,
+        canvasHeight: 600
+    },
+
     _objectIndex: 1,
     _startFrameObjectIndex: 1,
     _initalized: false,
@@ -8,13 +15,28 @@ var WebGPURecorder = {
     _frameIndex: -1,
     _isRecording: false,
     _frameVariables: {},
+    _asyncMethods: [
+        "requestAdapter",
+        "requestDevice",
+        "createComputePipelineAsync",
+        "createRenderPipelineAsync"
+    ],
 
-    config: {
-        maxFrameCount: 100,
-        exportName: "WebGPURecord",
-        canvasWidth: 800,
-        canvasHeight: 600
-    },
+    _skipMethods: [
+        "toString",
+        "entries",
+        "getContext",
+        "forEach",
+        "has",
+        "keys",
+        "values",
+        "getPreferredFormat",
+        "pushErrorScope",
+        "popErrorScope"
+    ],
+    _queue: null,
+    _arrayCache: [],
+    _totalData: 0,
 
     initialize: function() {
         if (!navigator.gpu || this._initalized)
@@ -289,26 +311,6 @@ window.addEventListener('load', main);
         this._wrapObject(ctx);
     },
 
-    _asyncMethods: [
-        "requestAdapter",
-        "requestDevice",
-        "createComputePipelineAsync",
-        "createRenderPipelineAsync"
-    ],
-
-    _skipMethods: [
-        "toString",
-        "entries",
-        "getContext",
-        "forEach",
-        "has",
-        "keys",
-        "values",
-        "getPreferredFormat",
-        "pushErrorScope",
-        "popErrorScope"
-    ],
-
     _objectHasMethods: function(object) {
         for (let m in object) {
             if (typeof(object[m]) == "function" && this._skipMethods.indexOf(m) == -1) {
@@ -317,8 +319,6 @@ window.addEventListener('load', main);
         }
         return false;
     },
-
-    _queue: null,
 
     _wrapObject: function(object) {
         // eslint-disable-next-line no-undef
@@ -439,9 +439,6 @@ window.addEventListener('load', main);
         return s;
     },
 
-    _arrayCache: [],
-    _totalData: 0,
-
     _getDataCache: function(heap, offset, length) {
         let self = this;
 
@@ -515,6 +512,11 @@ window.addEventListener('load', main);
             if (args[0].mappedAtCreation) {
                 args[0] = { ...args[0] }; // clone args[0]
                 args[0].mappedAtCreation = false;
+                // Make sure the buffer can be copied to since we're replacing mappedAtCreation 
+                // with a call to writeBuffer.
+                // eslint-disable-next-line no-undef
+                args[0].usage = (args[0].usage ?? 0) | GPUBufferUsage.COPY_DST;
+
             }
         }
 
