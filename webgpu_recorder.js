@@ -40,7 +40,6 @@ var WebGPURecorder = {
 
 // private:
     _objectIndex: 1,
-    _startFrameObjectIndex: 1,
     _initalized: false,
     _initializeCommands: [],
     _frameCommands: [],
@@ -73,11 +72,6 @@ var WebGPURecorder = {
     _frameStart: function() {
         this._frameIndex++;
         this._frameVariables[this._frameIndex] = new Set();
-        if (this._frameIndex == 0) {
-            this._startFrameObjectIndex = this._objectIndex;
-        } else {
-            this._objectIndex = this._startFrameObjectIndex;
-        }
         this._currentFrameCommands = [];
         this._frameCommands.push(this._currentFrameCommands);
     },
@@ -293,7 +287,7 @@ window.addEventListener('load', main);
         if (object.__id === undefined)
             this._registerObject(object);
 
-        let name = `x${object.__id||0}`;
+        let name = `x${(object.__id||0).toString(16)}`;
 
         if (this._frameIndex != object.__frame) {
             if (!this._isFrameVariable(-1, name)) {
@@ -414,8 +408,10 @@ window.addEventListener('load', main);
                 s += "null";
             } else if (typeof(value) == "string") {
                 s += `\`${value}\``;
-            } else if (value.__id) {
-                s += `x${value.__id}`;
+            } else if (value.__id !== undefined) {
+                s += `x${value.__id.toString(16)}`;
+            } else if (value.__data !== undefined) {
+                s += `D[${value.__data}]`;
             } else if (value.constructor == Array) {
                 s += this._stringifyArray(value);
             } else if (typeof(value) == "object") {
