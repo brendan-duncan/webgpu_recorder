@@ -26,6 +26,13 @@ var WebGPURecorder = {
 
         this._wrapObject(navigator.gpu);
 
+        // Wrap requestAnimationFrame so it can keep track of per-frame recording and know when
+        // the maximum number of frames has been reached.
+        //
+        // It would be nice to be able to arbitrarily start/stop recording. To do this,
+        // we would need to keep track of things like shader creation/deletion that can happen
+        // at arbitrary frames prior to the start, for any objects used within that recorded
+        // duration.
         let self = this;
         let __requestAnimationFrame = window.requestAnimationFrame;
         window.requestAnimationFrame = function(cb) {

@@ -40,3 +40,7 @@ You can change the default configuration of the WebGPURecorder by adding the fol
 * Figure out a way to start recording from an arbitrary frame and continue recording until you
 pause, similar to Spector.js. Because objects like buffers and textures may be created or
 deleted at arbitrary frames previously, we would need to track those even when recording isn't enabled.
+
+* Record analytics of what commands are used. This could include a start/stop analytics recording
+feature similar to Spector.js. This could include: the list of commands for a given frame, in order;
+what objects are used; the amount of data used; resulting render pass images.
