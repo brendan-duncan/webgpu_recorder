@@ -570,7 +570,7 @@ function WebGPURecorder_initialize() {
     if (configData) {
         try {
             let data = JSON.parse(configData.text);
-            WebGPURecorder.config.maxFrames = parseInt(data["frames"] || WebGPURecorder.config.maxFrames);
+            WebGPURecorder.config.maxFrameCount = parseInt(data["frames"] || WebGPURecorder.config.maxFrameCount);
             WebGPURecorder.config.exportName = data["export"] || WebGPURecorder.config.exportName;
             WebGPURecorder.config.canvasWidth = parseInt(data["width"] || WebGPURecorder.config.canvasWidth);
             WebGPURecorder.config.canvasHeight = parseInt(data["height"] || WebGPURecorder.config.canvasHeight);
