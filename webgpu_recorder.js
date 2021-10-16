@@ -65,7 +65,6 @@ var WebGPURecorder = {
         "pushErrorScope",
         "popErrorScope"
     ],
-    _queue: null,
     _arrayCache: [],
     _totalData: 0,
 
@@ -316,9 +315,6 @@ window.addEventListener('load', main);
     },
 
     _wrapObject: function(object) {
-        // eslint-disable-next-line no-undef
-        if (object.constructor === GPUQueue)
-            this._queue = object;
         for (let m in object) {
             if (typeof(object[m]) == "function") {
                 if (this._skipMethods.indexOf(m) == -1) {
