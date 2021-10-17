@@ -40,7 +40,7 @@ You can change the default configuration of the WebGPU Recorder by adding the fo
 * **height** is the height of the canvas in the recording. This should match the height of the original canvas.
 
 ***
-*A recording of an animated, textured cube:*
+*A WebGPU recording:*
 
 ![Recording Screenshot](test/test2.png)
 ![Recording Code](test/test2_code.png)
