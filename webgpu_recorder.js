@@ -340,6 +340,16 @@ window.addEventListener('load', main);
         }
     },
 
+    _getBytesFromImageSource: function(src) {
+        let canvas = document.createElement("canvas");
+        canvas.width = src.width;
+        canvas.height = src.height;
+        let c2d = canvas.getContext("2d");
+        c2d.drawImage(src, 0, 0);
+        let data = c2d.getImageData(0, 0, src.width, src.height);
+        return data.data;
+    },
+
     _wrapMethod: function(object, method) {
         if (this._skipMethods.indexOf(method) != -1)
             return;
@@ -362,6 +372,22 @@ window.addEventListener('load', main);
                     }
                     delete object.__mappedRanges;
                 }
+            } else if (method == "copyExternalImageToTexture") {
+                origMethod.call(object, ...arguments);
+
+                // copyExternalImageToTexture uses ImageBitmap (or canvas or offscreenCanvas) as
+                // its source, which we can't record. ConvertcopyExternalImageToTexture to
+                // writeTexture, and record the bytes from the ImageBitmap. To do that, we need
+                // to draw the ImageBitmap into a canvas, and record the bytes from that.
+                // A very heavy process, but not sure what else to do.
+                let bytes = self._getBytesFromImageSource(arguments[0].source);
+                let bytesPerPixel = 4;
+                let bytesPerRow = arguments[0].source.width * bytesPerPixel;
+
+                let cacheIndex = self._getDataCache(bytes, bytes.byteOffset, bytes.byteLength);
+                self._recordLine(`${self._getObjectVariable(object)}.writeTexture(${self._stringifyObject(arguments[1])}, D[${cacheIndex}], {bytesPerRow:${bytesPerRow}}, ${self._stringifyObject(arguments[2])});`);
+
+                return;
             }
 
             let result = origMethod.call(object, ...arguments);
@@ -508,8 +534,10 @@ window.addEventListener('load', main);
 
         let argStrings = [];
         for (let a of args) {
-            if (a == undefined) {
-                argStrings.push('undefined');
+            if (a === undefined) {
+                argStrings.push("undefined");
+            } else if (a === null) {
+                argStrings.push("null");
             } else if (a.__data !== undefined) {
                 argStrings.push(`D[${a.__data}]`); // This is a captured data buffer.
             } else if (a.__id) {
@@ -579,4 +607,4 @@ function WebGPURecorder_initialize() {
     WebGPURecorder.initialize();
 }
 window.addEventListener('load', WebGPURecorder_initialize);
-setTimeout(WebGPURecorder_initialize, 100);
+WebGPURecorder_initialize();
