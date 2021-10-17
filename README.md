@@ -12,8 +12,7 @@ This can be used to diagnose issues with WebGPU rendering by eliminating everyth
 
 * Copy the file **webgpu_recorder.js** to your HTML project.
 * Add `<script src="webgpu_recorder.js"></script>` to your HTML (with the *src* path being where you copied *webgpu_recorder.js*).
-* This script should be added before any rendering code starts so it has a chance to wrap WebGPU before
-any rendering starts.
+* **This script should be added before any rendering code starts so it has a chance to wrap WebGPU.**
 * Open the HTML in a browser that supports WebGPU, as you would normally.
 * The recording starts right away and it will record all subsequent frames.
 * The recording will download automatically as an HTML file with embedded Javascript after the maximum number of frames have been recorded.
@@ -42,14 +41,22 @@ You can change the default configuration of the WebGPU Recorder by adding the fo
 * **height** is the height of the canvas in the recording. This should match the height of the original canvas.
 
 ***
-*A WebGPU recording:*
+*A recording from a WebGPU game:*
 
 ![Recording Screenshot](test/test2.png)
 ![Recording Code](test/test2_code.png)
 
 ***
 
-### TODO
+### Notes
+
+* All buffer and texture data is stored in the recording. The recording stores the data in base64
+format to reduce file size, but it can still make the recording files quite large.
+* External textures in WebGPU can't be captured. _copyExternalImageToTexture_ will get converted
+to _writeTexture_ in the recording, with the external image data getting converted to raw data.
+
+
+### ToDo
 
 * Figure out a way to start recording from an arbitrary frame and continue recording until you
 pause, similar to Spector.js. Because objects like buffers and textures may be created or

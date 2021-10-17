@@ -26,6 +26,18 @@ var WebGPURecorder = {
 
         this._wrapObject(navigator.gpu);
 
+        let self = this;
+
+        // Capture any dynamically created canvases
+        let __createElement = document.createElement;
+        document.createElement = function(type) {
+            let element = __createElement.call(document, type);
+            if (type == "canvas") {
+                self._wrapCanvas(element);
+            }
+            return element;
+        };
+
         // Wrap requestAnimationFrame so it can keep track of per-frame recording and know when
         // the maximum number of frames has been reached.
         //
@@ -33,7 +45,6 @@ var WebGPURecorder = {
         // we would need to keep track of things like shader creation/deletion that can happen
         // at arbitrary frames prior to the start, for any objects used within that recorded
         // duration.
-        let self = this;
         let __requestAnimationFrame = window.requestAnimationFrame;
         window.requestAnimationFrame = function(cb) {
             function callback() {
@@ -238,24 +249,28 @@ window.addEventListener('load', main);
         document.body.removeChild(link);
     },
 
-    _wrapCanvases: function() {
+    _wrapCanvas: function(c) {
+        if (c.__id)
+            return;
+        this._registerObject(c);
         let self = this;
+        let __getContext = c.getContext;
+        c.getContext = function(a1, a2) {
+            let ret = __getContext.call(c, a1, a2);
+            if (a1 == 'webgpu') {
+                if (ret) {
+                    self._wrapContext(ret);
+                }
+            }
+            return ret;
+        };
+    },
+
+    _wrapCanvases: function() {
         let canvases = document.getElementsByTagName('canvas');
         for (let i = 0; i < canvases.length; ++i) {
             let c = canvases[i];
-            if (!c.__id) {
-                this._registerObject(c);
-                let origGetContext = c.getContext;
-                c.getContext = function(a1, a2) {
-                    let ret = origGetContext.call(c, a1, a2);
-                    if (a1 == 'webgpu') {
-                        if (ret) {
-                            self._wrapContext(ret);
-                        }
-                    }
-                    return ret;
-                };
-            }
+            this._wrapCanvas(c);
         }
     },
 
