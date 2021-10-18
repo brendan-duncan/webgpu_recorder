@@ -10,8 +10,10 @@ This can be used to diagnose issues with WebGPU rendering by eliminating everyth
 
 ## Usage
 
-* Copy the file **webgpu_recorder.js** to your HTML project.
-* Add `<script src="webgpu_recorder.js"></script>` to your HTML (with the *src* path being where you copied *webgpu_recorder.js*).
+* Copy the file **webgpu_recorder.js** to your HTML project and add `<script src="webgpu_recorder.js"></script>` to your HTML (with the *src* path being where you copied *webgpu_recorder.js*).
+* **Alternatively**, you can load the script through a CDN so you don't have to download it. 
+`<script src="https://cdn.jsdelivr.net/gh/brendan-duncan/webgpu_recorder/webgpu_recorder.js"></script>`. This will make sure you're using the latest version of the recorder.
+
 * **This script should be added before any rendering code starts so it has a chance to wrap WebGPU.**
 * Open the HTML in a browser that supports WebGPU, as you would normally.
 * The recording starts right away and it will record all subsequent frames.
