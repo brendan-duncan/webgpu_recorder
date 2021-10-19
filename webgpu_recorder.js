@@ -20,11 +20,10 @@ var WebGPURecorder = {
         this._frameVariables[-1] = new Set();
 
         this._registerObject(navigator.gpu);
+        this._wrapObject(navigator.gpu);
         this._recordLine(`${this._getObjectVariable(navigator.gpu)} = navigator.gpu;`);
 
         this._wrapCanvases();
-
-        this._wrapObject(navigator.gpu);
 
         let self = this;
 
@@ -470,7 +469,7 @@ window.addEventListener('load', main);
 
     _stringifyArray: function(a) {
         let s = "[";
-        s += this._getArgs("", a);
+        s += this._stringifyArgs("", a);
         s += "]";
         return s;
     },
@@ -523,7 +522,7 @@ window.addEventListener('load', main);
         return cacheIndex;
     },
 
-    _getArgs: function(method, args) {
+    _stringifyArgs: function(method, args) {
         // In order to capture buffer data, we need to know the offset and size of the data,
         // which are arguments of specific methods. So we need to special case those methods to
         // properly capture the buffer data passed to them.
@@ -537,8 +536,8 @@ window.addEventListener('load', main);
         } else if (method == "writeTexture") {
             let buffer = args[1];
             let bytesPerRow = args[2].bytesPerRow;
-            let height = args[3].height || args[3][1] || 0;
-            let size = bytesPerRow * height;
+            let rows = args[2].rowsPerImage || args[3].height || args[3][1] || 0;
+            let size = bytesPerRow * rows;
             let offset = args[2].offset;
             let cacheIndex = this._getDataCache(buffer, offset, size);
             args[1] = { __data: cacheIndex };
@@ -588,9 +587,9 @@ window.addEventListener('load', main);
             async = async ? "await " : "";
 
             if (result) {
-                this._recordLine(`${this._getObjectVariable(result)} = ${async}${this._getObjectVariable(object)}.${method}(${this._getArgs(method, args)});`);
+                this._recordLine(`${this._getObjectVariable(result)} = ${async}${this._getObjectVariable(object)}.${method}(${this._stringifyArgs(method, args)});`);
             } else {
-                this._recordLine(`${async}${this._getObjectVariable(object)}.${method}(${this._getArgs(method, args)});`);
+                this._recordLine(`${async}${this._getObjectVariable(object)}.${method}(${this._stringifyArgs(method, args)});`);
             }
 
             if (result && typeof(result) == "object")
