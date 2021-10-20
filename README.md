@@ -15,10 +15,8 @@ This can be used to diagnose issues with WebGPU rendering by eliminating everyth
 You can load the script through a CDN so you don't have to store it locally and make sure you're always using the latest version of the recorder.
 
 ```html
-<script src="https://cdn.jsdelivr.net/gh/brendan-duncan/webgpu_recorder@latest/webgpu_recorder.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/brendan-duncan/webgpu_recorder@1/webgpu_recorder.js"></script>
 ````
-
-You can replace @latest with a specific version number, such as 1.0.0.
 
 ### Load From Local Script Reference
 
