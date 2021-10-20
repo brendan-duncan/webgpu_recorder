@@ -10,14 +10,18 @@ This can be used to diagnose issues with WebGPU rendering by eliminating everyth
 
 ## Usage
 
-**Load From CDN**
+### Load From CDN
+
 You can load the script through a CDN so you don't have to store it locally and make sure you're always using the latest version of the recorder.
 
 ```html
-<script src="https://cdn.jsdelivr.net/gh/brendan-duncan/webgpu_recorder/webgpu_recorder.js"></script>
+<script src="https://cdn.jsdelivr.net/gh/brendan-duncan/webgpu_recorder@latest/webgpu_recorder.js"></script>
 ````
 
-**Load From Local Script Reference**
+You can replace @latest with a specific version number, such as 1.0.0.
+
+### Load From Local Script Reference
+
 If you prefer to host your own version, copy the script to your project and load it by adding the following to your project's HTML.
 
 ```html
