@@ -3,10 +3,10 @@ class WebGPURecorder {
     constructor(options) {
         options = options || {};
         this.config = {
-            maxFrameCount: options.maxFrameCount || 100,
-            exportName: options.exportName || "WebGPURecord",
-            canvasWidth: options.canvasWidth || 800,
-            canvasHeight: options.canvasHeight || 600
+            maxFrameCount: options.frames || 100,
+            exportName: options.export || "WebGPURecord",
+            canvasWidth: options.width || 800,
+            canvasHeight: options.height || 600
         };
 
         this._objectIndex = 1;
