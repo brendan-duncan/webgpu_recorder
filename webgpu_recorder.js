@@ -599,28 +599,3 @@ WebGPURecorder._skipMethods = [
     "pushErrorScope",
     "popErrorScope"
 ];
-
-function WebGPURecorder_initialize() {
-    // Get configuration settings from the html in the form:
-    // <script id="webgpu_recorder" type="application/json">{
-    //    "frames": 100,
-    //    "export": "WebGPURecord",
-    //    "width": 800,
-    //    "height": 600
-    // }</script>
-    let configData = document.getElementById("webgpu_recorder");
-    let options = {};
-    if (configData) {
-        try {
-            let data = JSON.parse(configData.text);
-            options.maxFrameCount = data.frames ? parseInt(data["frames"]) : undefined;
-            options.exportName = data.export ? data["export"] : undefined;
-            options.canvasWidth = data.width ? parseInt(data["width"]) : undefined;
-            options.canvasHeight = data.height ? parseInt(data["height"]) : undefined;
-        } catch (error) {
-            //
-        }
-    }
-    new WebGPURecorder(options);
-}
-WebGPURecorder_initialize();
