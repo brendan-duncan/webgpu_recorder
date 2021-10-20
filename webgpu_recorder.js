@@ -1,14 +1,26 @@
-var WebGPURecorder = {
+class WebGPURecorder {
 // public:
-    config: {
-        maxFrameCount: 100,
-        exportName: "WebGPURecord",
-        canvasWidth: 800,
-        canvasHeight: 600
-    },
+    constructor(options) {
+        options = options || {};
+        this.config = {
+            maxFrameCount: options.maxFrameCount || 100,
+            exportName: options.exportName || "WebGPURecord",
+            canvasWidth: options.canvasWidth || 800,
+            canvasHeight: options.canvasHeight || 600
+        };
 
-    initialize: function() {
-        if (!navigator.gpu || this._initalized)
+        this._objectIndex = 1;
+        this._initalized = false;
+        this._initializeCommands = [];
+        this._frameCommands = [];
+        this._currentFrameCommands = null;
+        this._frameIndex = -1;
+        this._isRecording = false;
+        this._frameVariables = {};
+        this._arrayCache = [];
+        this._totalData = 0;
+
+        if (!navigator.gpu)
             return;
 
         this._isRecording = true;
@@ -53,53 +65,24 @@ var WebGPURecorder = {
             }
             __requestAnimationFrame(callback);
         };
-    },
+    }
 
 // private:
-    _objectIndex: 1,
-    _initalized: false,
-    _initializeCommands: [],
-    _frameCommands: [],
-    _currentFrameCommands: null,
-    _frameIndex: -1,
-    _isRecording: false,
-    _frameVariables: {},
-    _asyncMethods: [
-        "requestAdapter",
-        "requestDevice",
-        "createComputePipelineAsync",
-        "createRenderPipelineAsync"
-    ],
-    _skipMethods: [
-        "toString",
-        "entries",
-        "getContext",
-        "forEach",
-        "has",
-        "keys",
-        "values",
-        "getPreferredFormat",
-        "pushErrorScope",
-        "popErrorScope"
-    ],
-    _arrayCache: [],
-    _totalData: 0,
-
-    _frameStart: function() {
+    _frameStart() {
         this._frameIndex++;
         this._frameVariables[this._frameIndex] = new Set();
         this._currentFrameCommands = [];
         this._frameCommands.push(this._currentFrameCommands);
-    },
+    }
 
-    _frameEnd: function() {
+    _frameEnd() {
         if (this._frameIndex == this.config.maxFrameCount) {
             this._isRecording = false;
             this._generateOutput();
         }
-    },
+    }
 
-    _generateOutput: function() {
+    _generateOutput() {
         let s = 
 `<html>
     <body style="text-align: center;">
@@ -203,9 +186,9 @@ window.addEventListener('load', main);
     </body>
 </html>\n`;
         this._downloadFile(s, (this.config.exportName || 'WebGpuRecord') + ".html");
-    },
+    }
 
-    _encodeBase64: function(bytes) {
+    _encodeBase64(bytes) {
         const _b2a = [
             "A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K", "L", "M",
             "N", "O", "P", "Q", "R", "S", "T", "U", "V", "W", "X", "Y", "Z",
@@ -233,22 +216,22 @@ window.addEventListener('load', main);
             result += "=";
         }
         return result;
-    },
+    }
 
-    _arrayToBase64: function(a) {
+    _arrayToBase64(a) {
         return this._encodeBase64(new Uint8Array(a.buffer, a.byteOffset, a.byteLength));
-    },
+    }
 
-    _downloadFile: function(data, filename) {
+    _downloadFile(data, filename) {
         const link = document.createElement('a');
         link.href = URL.createObjectURL(new Blob([data], {type: 'application/javascript'}));
         link.download = filename;
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
-    },
+    }
 
-    _wrapCanvas: function(c) {
+    _wrapCanvas(c) {
         if (c.__id)
             return;
         this._registerObject(c);
@@ -263,44 +246,44 @@ window.addEventListener('load', main);
             }
             return ret;
         };
-    },
+    }
 
-    _wrapCanvases: function() {
+    _wrapCanvases() {
         let canvases = document.getElementsByTagName('canvas');
         for (let i = 0; i < canvases.length; ++i) {
             let c = canvases[i];
             this._wrapCanvas(c);
         }
-    },
+    }
 
-    _registerObject: function(object) {
+    _registerObject(object) {
         let id = this._objectIndex++;
         object.__id = id;
         object.__frame = this._frameIndex;
-    },
+    }
 
-    _isFrameVariable: function(frame, name) {
+    _isFrameVariable(frame, name) {
         return this._frameVariables[frame] && this._frameVariables[frame].has(name);
-    },
+    }
 
-    _removeVariable: function(name) {
+    _removeVariable(name) {
         for (let f in this._frameVariables) {
             let fs = this._frameVariables[f];
             fs.delete(name);
         }
-    },
+    }
 
-    _addVariable: function(frame, name) {
+    _addVariable(frame, name) {
         this._frameVariables[frame].add(name);
-    },
+    }
 
-    _getVariableDeclarations: function(frame) {
+    _getVariableDeclarations(frame) {
         let s = this._frameVariables[frame];
         if (!s.size) return "";
         return `let ${[...s].join(",")};`;
-    },
+    }
 
-    _getObjectVariable: function(object) {
+    _getObjectVariable(object) {
         if (object.__id === undefined)
             this._registerObject(object);
 
@@ -316,27 +299,27 @@ window.addEventListener('load', main);
         }
 
         return name;
-    },
+    }
 
-    _wrapContext: function(ctx) {
+    _wrapContext(ctx) {
         this._recordLine(`${this._getObjectVariable(ctx)} = canvas.getContext('webgpu');`);
         this._wrapObject(ctx);
-    },
+    }
 
-    _objectHasMethods: function(object) {
+    _objectHasMethods(object) {
         for (let m in object) {
-            if (typeof(object[m]) == "function" && this._skipMethods.indexOf(m) == -1) {
+            if (typeof(object[m]) == "function" && WebGPURecorder._skipMethods.indexOf(m) == -1) {
                 return true;
             }
         }
         return false;
-    },
+    }
 
-    _wrapObject: function(object) {
+    _wrapObject(object) {
         for (let m in object) {
             if (typeof(object[m]) == "function") {
-                if (this._skipMethods.indexOf(m) == -1) {
-                    if (this._asyncMethods.indexOf(m) != -1)
+                if (WebGPURecorder._skipMethods.indexOf(m) == -1) {
+                    if (WebGPURecorder._asyncMethods.indexOf(m) != -1)
                         this._wrapAsync(object, m);
                     else
                         this._wrapMethod(object, m);
@@ -352,9 +335,9 @@ window.addEventListener('load', main);
                 }
             }
         }
-    },
+    }
 
-    _getBytesFromImageSource: function(src) {
+    _getBytesFromImageSource(src) {
         let canvas = document.createElement("canvas");
         canvas.width = src.width;
         canvas.height = src.height;
@@ -362,10 +345,10 @@ window.addEventListener('load', main);
         c2d.drawImage(src, 0, 0);
         let data = c2d.getImageData(0, 0, src.width, src.height);
         return data.data;
-    },
+    }
 
-    _wrapMethod: function(object, method) {
-        if (this._skipMethods.indexOf(method) != -1)
+    _wrapMethod(object, method) {
+        if (WebGPURecorder._skipMethods.indexOf(method) != -1)
             return;
         let origMethod = object[method];
         let self = this;
@@ -416,9 +399,9 @@ window.addEventListener('load', main);
             }
             return result;
         };
-    },
+    }
 
-    _wrapAsync: function(object, method) {
+    _wrapAsync(object, method) {
         let origMethod = object[method];
         let self = this;
         object[method] = function() {
@@ -435,9 +418,9 @@ window.addEventListener('load', main);
             });
             return wrappedPromise;
         };
-    },
+    }
 
-    _stringifyObject: function(object) {
+    _stringifyObject(object) {
         let s = "{";
         let first = true;
         for (let key in object) {
@@ -465,17 +448,16 @@ window.addEventListener('load', main);
         }
         s += "}";
         return s;
-    },
+    }
 
-    _stringifyArray: function(a) {
+    _stringifyArray(a) {
         let s = "[";
         s += this._stringifyArgs("", a);
         s += "]";
         return s;
-    },
+    }
 
-
-    _getDataCache: function(heap, offset, length) {
+    _getDataCache(heap, offset, length) {
         let self = this;
 
         function _heapAccessShiftForWebGPUHeap(heap) {
@@ -520,9 +502,9 @@ window.addEventListener('load', main);
             });
         }
         return cacheIndex;
-    },
+    }
 
-    _stringifyArgs: function(method, args) {
+    _stringifyArgs(method, args) {
         // In order to capture buffer data, we need to know the offset and size of the data,
         // which are arguments of specific methods. So we need to special case those methods to
         // properly capture the buffer data passed to them.
@@ -567,9 +549,9 @@ window.addEventListener('load', main);
             }
         }
         return argStrings.join();
-    },
+    }
 
-    _recordLine: function(line) {
+    _recordLine(line) {
         if (this._isRecording) {
             if (this._frameIndex == -1) {
                 this._initializeCommands.push(line);
@@ -577,9 +559,9 @@ window.addEventListener('load', main);
                 this._currentFrameCommands.push(line);
             }
         }
-    },
+    }
 
-    _recordCommand: function(async, object, method, result, args) {
+    _recordCommand(async, object, method, result, args) {
         if (this._isRecording) {
             if (result)
                 this._registerObject(result);
@@ -596,7 +578,27 @@ window.addEventListener('load', main);
                 this._wrapObject(result);
         }
     }
-};
+}
+
+WebGPURecorder._asyncMethods = [
+    "requestAdapter",
+    "requestDevice",
+    "createComputePipelineAsync",
+    "createRenderPipelineAsync"
+];
+
+WebGPURecorder._skipMethods = [
+    "toString",
+    "entries",
+    "getContext",
+    "forEach",
+    "has",
+    "keys",
+    "values",
+    "getPreferredFormat",
+    "pushErrorScope",
+    "popErrorScope"
+];
 
 function WebGPURecorder_initialize() {
     // Get configuration settings from the html in the form:
@@ -607,18 +609,18 @@ function WebGPURecorder_initialize() {
     //    "height": 600
     // }</script>
     let configData = document.getElementById("webgpu_recorder");
+    let options = {};
     if (configData) {
         try {
             let data = JSON.parse(configData.text);
-            WebGPURecorder.config.maxFrameCount = parseInt(data["frames"] || WebGPURecorder.config.maxFrameCount);
-            WebGPURecorder.config.exportName = data["export"] || WebGPURecorder.config.exportName;
-            WebGPURecorder.config.canvasWidth = parseInt(data["width"] || WebGPURecorder.config.canvasWidth);
-            WebGPURecorder.config.canvasHeight = parseInt(data["height"] || WebGPURecorder.config.canvasHeight);
+            options.maxFrameCount = data.frames ? parseInt(data["frames"]) : undefined;
+            options.exportName = data.export ? data["export"] : undefined;
+            options.canvasWidth = data.width ? parseInt(data["width"]) : undefined;
+            options.canvasHeight = data.height ? parseInt(data["height"]) : undefined;
         } catch (error) {
             //
         }
     }
-    WebGPURecorder.initialize();
+    new WebGPURecorder(options);
 }
-window.addEventListener('load', WebGPURecorder_initialize);
 WebGPURecorder_initialize();
