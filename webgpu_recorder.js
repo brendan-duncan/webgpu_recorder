@@ -116,7 +116,12 @@ s += `
         let t1 = performance.now();
         frameLabel.innerText = "F: " + frame + "  T:" + (t1 - t0).toFixed(2);
         t0 = t1;
-        frames[frame]();
+        try {
+            frames[frame]();
+        } catch (err) {
+            console.log("Error Frame:", frame);
+            console.error(err);
+        }
         frame++;
     }
     requestAnimationFrame(renderFrame);
@@ -421,21 +426,22 @@ window.addEventListener('load', main);
     }
 
     _stringifyObject(object) {
-        let s = "{";
+        let s = "";
         let first = true;
         for (let key in object) {
+            let value = object[key];
+            if (value === undefined) {
+                continue;
+            }
             if (!first) s += ",";
             first = false;
             s += `"${key}":`;
-            let value = object[key];
-            if (value === undefined) {
-                s += "undefined";
-            } else if (value === null) {
+            if (value === null) {
                 s += "null";
             } else if (typeof(value) == "string") {
                 s += `\`${value}\``;
             } else if (value.__id !== undefined) {
-                s += `x${value.__id.toString(16)}`;
+                s += this._getObjectVariable(value);
             } else if (value.__data !== undefined) {
                 s += `D[${value.__data}]`;
             } else if (value.constructor == Array) {
@@ -446,7 +452,7 @@ window.addEventListener('load', main);
                 s += `${value}`;
             }
         }
-        s += "}";
+        s = "{" + s + "}";
         return s;
     }
 
@@ -505,6 +511,9 @@ window.addEventListener('load', main);
     }
 
     _stringifyArgs(method, args) {
+        if (args.length == 0 || (args.length == 1 && args[0] === undefined))
+            return "";
+
         // In order to capture buffer data, we need to know the offset and size of the data,
         // which are arguments of specific methods. So we need to special case those methods to
         // properly capture the buffer data passed to them.
