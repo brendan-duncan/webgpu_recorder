@@ -175,14 +175,16 @@ function decodeBase64(str) {
     return result.subarray(0, result.length - missingOctets);
 }
 
-function B64ToA(s) {
+function B64ToA(s, type, length) {
     let x = decodeBase64(s);
+    if (type == "Uint32Array")
+        return new Uint32Array(x.buffer, 0, x.length/4);
     return new Uint8Array(x.buffer, 0, x.length);
 }\n`;
     for (let ai = 0; ai < this._arrayCache.length; ++ai) {
         let a = this._arrayCache[ai];
         let b64 = this._arrayToBase64(a.array);
-        s += `D[${ai}] = B64ToA("${b64}");\n`;
+        s += `D[${ai}] = B64ToA("${b64}", "${a.type}", ${a.length});\n`;
     }
 
 s += `
@@ -367,7 +369,7 @@ window.addEventListener('load', main);
                     for (let buffer of object.__mappedRanges) {
                         // Make a copy of the mappedRange buffer data as it is when unmap
                         // is called.
-                        let cacheIndex = self._getDataCache(buffer, buffer.byteOffset, buffer.byteLength);
+                        let cacheIndex = self._getDataCache(buffer, 0, buffer.byteLength);
                         // Set the mappedRange buffer data in the recording to what is in the buffer
                         // at the time unmap is called.
                         self._recordLine(`new Uint8Array(${self._getObjectVariable(buffer)}).set(D[${cacheIndex}]);`);
@@ -467,6 +469,7 @@ window.addEventListener('load', main);
         let self = this;
 
         function _heapAccessShiftForWebGPUHeap(heap) {
+            if (!heap.BYTES_PER_ELEMENT) return 0;
             return 31 - Math.clz32(heap.BYTES_PER_ELEMENT);
         }
 
@@ -482,14 +485,16 @@ window.addEventListener('load', main);
             return true;
         }
         
-        offset = offset << _heapAccessShiftForWebGPUHeap(heap);
-        this._totalData += length;
-        let view = new Uint8Array(heap.buffer ?? heap, offset, length);
+        let byteOffset = offset << _heapAccessShiftForWebGPUHeap(heap);
+        let byteLength = length << _heapAccessShiftForWebGPUHeap(heap);
+
+        this._totalData += byteLength;
+        let view = new Uint8Array(heap.buffer ?? heap, byteOffset, byteLength);
 
         let cacheIndex = -1;
         for (let ai = 0; ai < self._arrayCache.length; ++ai) {
             let c = self._arrayCache[ai];
-            if (c.offset == offset && c.length == length) {
+            if (c.length == length) {
                 if (_validateCacheData(ai, view)) {
                     cacheIndex = ai;
                     break;
@@ -501,9 +506,8 @@ window.addEventListener('load', main);
             cacheIndex = self._arrayCache.length;
             let arrayCopy = Uint8Array.from(view);
             self._arrayCache.push({
-                offset: 0,
-                length: length,
-                type: 'Uint8Array',
+                length: byteLength,
+                type: heap.constructor === "ArrayBuffer" ? Uint8Array : heap.constructor.name,
                 array: arrayCopy
             });
         }
@@ -513,6 +517,8 @@ window.addEventListener('load', main);
     _stringifyArgs(method, args) {
         if (args.length == 0 || (args.length == 1 && args[0] === undefined))
             return "";
+
+        args = Array.from(args);
 
         // In order to capture buffer data, we need to know the offset and size of the data,
         // which are arguments of specific methods. So we need to special case those methods to
@@ -534,7 +540,19 @@ window.addEventListener('load', main);
             args[1] = { __data: cacheIndex };
             args[2].offset = 0;
         } else if (method == "setBindGroup") {
-            args.length = 2; // TODO: support dynamic offsets
+            if (args.length == 5) {
+                let buffer = args[2];
+                let offset = args[3];
+                let size = args[4];
+                let offsets = this._getDataCache(buffer, offset, size);
+                args[2] = { __data: offsets };
+                args.length = 3;
+            } else if (args.length == 3) {
+                let buffer = args[2];
+                let offsets = this._getDataCache(buffer, 0, buffer.length);
+                args[2] = { __data: offsets };
+                args.length = 3;
+            }
         }
 
         let argStrings = [];
