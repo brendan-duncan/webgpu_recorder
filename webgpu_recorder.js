@@ -97,7 +97,7 @@ async function main() {
   ${this._getVariableDeclarations(-1)}
   ${this._initializeCommands.join("\n  ")}\n`;
 for (let fi = 0, fl = this._frameCommands.length; fi < fl; ++fi) {
-        s += `function f${fi}() {
+        s += `async function f${fi}() {
   ${this._getVariableDeclarations(fi)}
   ${this._frameCommands[fi].join("\n  ")}
 }\n`;
@@ -108,16 +108,19 @@ for (let fi = 0, fl = this._frameCommands.length; fi < fl; ++fi) {
 }
 s += "];";
 s += `
-    let frame = 0
+    let frame = 0;
+    let lastFrame = -1;
     let t0 = performance.now();
-    function renderFrame() {
+    async function renderFrame() {
         if (frame > ${this._frameCommands.length - 1}) return;
         requestAnimationFrame(renderFrame);
+        if (frame == lastFrame) return;
+        lastFrame = frame;
         let t1 = performance.now();
         frameLabel.innerText = "F: " + frame + "  T:" + (t1 - t0).toFixed(2);
         t0 = t1;
         try {
-            frames[frame]();
+            await frames[frame]();
         } catch (err) {
             console.log("Error Frame:", frame);
             console.error(err);
