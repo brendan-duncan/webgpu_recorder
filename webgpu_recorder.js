@@ -476,7 +476,7 @@ window.addEventListener('load', main);
             return 31 - Math.clz32(heap.BYTES_PER_ELEMENT);
         }
 
-        function _validateCacheData(ai, view) {
+        function _compareCacheData(ai, view) {
             let a = self._arrayCache[ai].array;
             if (a.length != view.length) 
                 return false;
@@ -487,8 +487,8 @@ window.addEventListener('load', main);
             }
             return true;
         }
-        
-        let byteOffset = offset << _heapAccessShiftForWebGPUHeap(heap);
+
+        let byteOffset = ((heap.byteOffset ?? 0) + offset) << _heapAccessShiftForWebGPUHeap(heap);
         let byteLength = length << _heapAccessShiftForWebGPUHeap(heap);
 
         this._totalData += byteLength;
@@ -498,7 +498,7 @@ window.addEventListener('load', main);
         for (let ai = 0; ai < self._arrayCache.length; ++ai) {
             let c = self._arrayCache[ai];
             if (c.length == length) {
-                if (_validateCacheData(ai, view)) {
+                if (_compareCacheData(ai, view)) {
                     cacheIndex = ai;
                     break;
                 }
@@ -514,6 +514,7 @@ window.addEventListener('load', main);
                 array: arrayCopy
             });
         }
+        
         return cacheIndex;
     }
 
