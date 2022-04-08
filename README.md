@@ -78,6 +78,8 @@ Open the downloaded HTML file in a WebGPU capable browser to play back the recor
 
 It is necessary to start the recorder prior to rendering so that all WebGPU objects are correctly recorded.
 
+It is best suited for small tests, as the recorded data can get quite large.
+
 All buffer and texture data is stored in the recording. The recording stores the data in base64 format to reduce file size, but it can still make the recording files large.
 
 External textures in WebGPU can't be captured. _copyExternalImageToTexture_ will get converted to _writeTexture_ in the recording, with the external image data getting converted to raw data.
