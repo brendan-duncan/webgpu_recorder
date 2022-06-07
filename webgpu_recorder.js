@@ -595,7 +595,12 @@ window.addEventListener('load', main);
     _recordCommand(async, object, method, result, args) {
         if (this._isRecording) {
             if (result)
+            {
+                if (typeof(result) === "string")
+                    return;
+
                 this._registerObject(result);
+            }
 
             async = async ? "await " : "";
 
