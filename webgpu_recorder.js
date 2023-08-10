@@ -318,7 +318,7 @@ window.addEventListener('load', main);
 
     _objectHasMethods(object) {
         for (let m in object) {
-            if (typeof(object[m]) == "function" && WebGPURecorder._skipMethods.indexOf(m) == -1) {
+            if (typeof(object[m]) == "function" && !WebGPURecorder._skipMethods.has(m)) {
                 return true;
             }
         }
@@ -328,8 +328,8 @@ window.addEventListener('load', main);
     _wrapObject(object) {
         for (let m in object) {
             if (typeof(object[m]) == "function") {
-                if (WebGPURecorder._skipMethods.indexOf(m) == -1) {
-                    if (WebGPURecorder._asyncMethods.indexOf(m) != -1)
+                if (!WebGPURecorder._skipMethods.has(m)) {
+                    if (WebGPURecorder._asyncMethods.has(m))
                         this._wrapAsync(object, m);
                     else
                         this._wrapMethod(object, m);
@@ -358,7 +358,7 @@ window.addEventListener('load', main);
     }
 
     _wrapMethod(object, method) {
-        if (WebGPURecorder._skipMethods.indexOf(method) != -1)
+        if (WebGPURecorder._skipMethods.has(method))
             return;
         let origMethod = object[method];
         let self = this;
@@ -616,14 +616,14 @@ window.addEventListener('load', main);
     }
 }
 
-WebGPURecorder._asyncMethods = [
+WebGPURecorder._asyncMethods = new Set([
     "requestAdapter",
     "requestDevice",
     "createComputePipelineAsync",
     "createRenderPipelineAsync"
-];
+]);
 
-WebGPURecorder._skipMethods = [
+WebGPURecorder._skipMethods = new Set([
     "toString",
     "entries",
     "getContext",
@@ -634,4 +634,4 @@ WebGPURecorder._skipMethods = [
     "getPreferredFormat",
     "pushErrorScope",
     "popErrorScope"
-];
+]);
