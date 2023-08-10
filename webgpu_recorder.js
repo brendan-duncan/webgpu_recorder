@@ -488,8 +488,8 @@ window.addEventListener('load', main);
             return true;
         }
 
-        let byteOffset = ((heap.byteOffset ?? 0) + offset) << _heapAccessShiftForWebGPUHeap(heap);
-        let byteLength = length << _heapAccessShiftForWebGPUHeap(heap);
+        let byteOffset = (heap.byteOffset ?? 0) + ((offset ?? 0) << _heapAccessShiftForWebGPUHeap(heap));
+        let byteLength = length === undefined ? heap.byteLength : (length << _heapAccessShiftForWebGPUHeap(heap));
 
         this._totalData += byteLength;
         let view = new Uint8Array(heap.buffer ?? heap, byteOffset, byteLength);
