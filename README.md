@@ -36,9 +36,9 @@ Once the recorder script has been loaded in your app, you can instantiate the re
 </script>
 ```
 
-Because the recorder needs to record all commands and data, it starts recording as soon as it is contructed, and will continue recording for the maximum number of frames. **The recorder should be created before any rendering code starts so it has a chance to wrap WebGPU.**
+Because the recorder needs to record all commands and data, it starts recording as soon as it is constructed, and will continue recording for the maximum number of frames. **The recorder should be created before any rendering code starts so it has a chance to wrap WebGPU.**
 
-The recording will download automatically as an HTML file with embedded Javascript after the maximum number of frames have been recorded.
+The recording will download automatically as an HTML file with embedded Javascript after the maximum number of frames have been recorded or when `generateOutput` is called (see [example](test/test3.html)).
 
 You can optionally configure the recorder
 

@@ -77,12 +77,12 @@ class WebGPURecorder {
 
     _frameEnd() {
         if (this._frameIndex == this.config.maxFrameCount) {
-            this._isRecording = false;
-            this._generateOutput();
+            this.generateOutput();
         }
     }
 
-    _generateOutput() {
+    generateOutput() {
+        this._isRecording = false;
         let s = 
 `<html>
     <body style="text-align: center;">
