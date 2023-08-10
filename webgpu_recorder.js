@@ -297,7 +297,7 @@ window.addEventListener('load', main);
         if (object.__id === undefined)
             this._registerObject(object);
 
-        let name = `x${(object.__id||0).toString(16)}`;
+        let name = `x${object.constructor.name.replace(/^GPU/, '')}${(object.__id||0).toString(16)}`;
 
         if (this._frameIndex != object.__frame) {
             if (!this._isFrameVariable(-1, name)) {
