@@ -418,7 +418,7 @@ main();
             let promise = origMethod.call(object, ...arguments);
             let wrappedPromise = new Promise((resolve) => {
                 promise.then((result) => {
-                    if (result.__id) {
+                    if (result && result.__id) {
                         resolve(result);
                         return;
                     }
@@ -620,7 +620,8 @@ WebGPURecorder._asyncMethods = new Set([
     "requestAdapter",
     "requestDevice",
     "createComputePipelineAsync",
-    "createRenderPipelineAsync"
+    "createRenderPipelineAsync",
+    "mapAsync",
 ]);
 
 WebGPURecorder._skipMethods = new Set([
