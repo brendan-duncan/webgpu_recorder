@@ -406,7 +406,10 @@ main();
                 if (!object.__mappedRanges)
                     object.__mappedRanges = [];
                 object.__mappedRanges.push(result);
-            }
+            } else if (method == "submit") {
+                // just to give the file some structure
+                self._recordLine('');
+            }            
             return result;
         };
     }
