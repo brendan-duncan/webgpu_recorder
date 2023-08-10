@@ -77,12 +77,12 @@ class WebGPURecorder {
 
     _frameEnd() {
         if (this._frameIndex == this.config.maxFrameCount) {
-            this._isRecording = false;
-            this._generateOutput();
+            this.generateOutput();
         }
     }
 
-    _generateOutput() {
+    generateOutput() {
+        this._isRecording = false;
         let s = 
 `<html>
     <body style="text-align: center;">
@@ -191,7 +191,7 @@ function B64ToA(s, type, length) {
     }
 
 s += `
-window.addEventListener('load', main);
+main();
         </script>
     </body>
 </html>\n`;
@@ -234,7 +234,7 @@ window.addEventListener('load', main);
 
     _downloadFile(data, filename) {
         const link = document.createElement('a');
-        link.href = URL.createObjectURL(new Blob([data], {type: 'application/javascript'}));
+        link.href = URL.createObjectURL(new Blob([data], {type: 'text/html'}));
         link.download = filename;
         document.body.appendChild(link);
         link.click();
@@ -297,7 +297,7 @@ window.addEventListener('load', main);
         if (object.__id === undefined)
             this._registerObject(object);
 
-        let name = `x${(object.__id||0).toString(16)}`;
+        let name = `x${object.constructor.name.replace(/^GPU/, '')}${(object.__id||0)}`;
 
         if (this._frameIndex != object.__frame) {
             if (!this._isFrameVariable(-1, name)) {
@@ -318,7 +318,7 @@ window.addEventListener('load', main);
 
     _objectHasMethods(object) {
         for (let m in object) {
-            if (typeof(object[m]) == "function" && WebGPURecorder._skipMethods.indexOf(m) == -1) {
+            if (typeof(object[m]) == "function" && !WebGPURecorder._skipMethods.has(m)) {
                 return true;
             }
         }
@@ -328,8 +328,8 @@ window.addEventListener('load', main);
     _wrapObject(object) {
         for (let m in object) {
             if (typeof(object[m]) == "function") {
-                if (WebGPURecorder._skipMethods.indexOf(m) == -1) {
-                    if (WebGPURecorder._asyncMethods.indexOf(m) != -1)
+                if (!WebGPURecorder._skipMethods.has(m)) {
+                    if (WebGPURecorder._asyncMethods.has(m))
                         this._wrapAsync(object, m);
                     else
                         this._wrapMethod(object, m);
@@ -358,7 +358,7 @@ window.addEventListener('load', main);
     }
 
     _wrapMethod(object, method) {
-        if (WebGPURecorder._skipMethods.indexOf(method) != -1)
+        if (WebGPURecorder._skipMethods.has(method))
             return;
         let origMethod = object[method];
         let self = this;
@@ -488,8 +488,8 @@ window.addEventListener('load', main);
             return true;
         }
 
-        let byteOffset = ((heap.byteOffset ?? 0) + offset) << _heapAccessShiftForWebGPUHeap(heap);
-        let byteLength = length << _heapAccessShiftForWebGPUHeap(heap);
+        let byteOffset = (heap.byteOffset ?? 0) + ((offset ?? 0) << _heapAccessShiftForWebGPUHeap(heap));
+        let byteLength = length === undefined ? heap.byteLength : (length << _heapAccessShiftForWebGPUHeap(heap));
 
         this._totalData += byteLength;
         let view = new Uint8Array(heap.buffer ?? heap, byteOffset, byteLength);
@@ -616,14 +616,14 @@ window.addEventListener('load', main);
     }
 }
 
-WebGPURecorder._asyncMethods = [
+WebGPURecorder._asyncMethods = new Set([
     "requestAdapter",
     "requestDevice",
     "createComputePipelineAsync",
     "createRenderPipelineAsync"
-];
+]);
 
-WebGPURecorder._skipMethods = [
+WebGPURecorder._skipMethods = new Set([
     "toString",
     "entries",
     "getContext",
@@ -634,4 +634,4 @@ WebGPURecorder._skipMethods = [
     "getPreferredFormat",
     "pushErrorScope",
     "popErrorScope"
-];
+]);
