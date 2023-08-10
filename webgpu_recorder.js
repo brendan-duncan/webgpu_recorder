@@ -633,6 +633,7 @@ WebGPURecorder._skipMethods = new Set([
     "keys",
     "values",
     "getPreferredFormat",
+    "requestAdapterInfo",
     "pushErrorScope",
     "popErrorScope"
 ]);
