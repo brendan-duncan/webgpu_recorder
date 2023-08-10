@@ -191,7 +191,7 @@ function B64ToA(s, type, length) {
     }
 
 s += `
-window.addEventListener('load', main);
+main();
         </script>
     </body>
 </html>\n`;
