@@ -535,10 +535,18 @@ main();
             args[2] = { __data: cacheIndex };
             args[3] = 0;
         } else if (method == "writeTexture") {
+            let texture = args[0].texture;
             let buffer = args[1];
             let bytesPerRow = args[2].bytesPerRow;
-            let rows = args[2].rowsPerImage || args[3].height || args[3][1] || 0;
-            let size = bytesPerRow * rows;
+            let width = args[3].width || args[3][0];
+            let {blockWidth, blockHeight, bytesPerBlock} = WebGPURecorder._formatInfo[texture.format];
+            let widthInBlocks = width / blockWidth;
+            let rows = args[2].rowsPerImage || (args[3].height || args[3][1] || 1) / blockHeight;
+            let layers = args[3].depthOrArrayLayers || args[3][2] || 1;
+            let totalRows = rows * layers;
+            let size = totalRows > 0
+                ? bytesPerRow * (totalRows - 1) + widthInBlocks * bytesPerBlock
+                : 0;
             let offset = args[2].offset;
             // offset is in bytes but source can be any TypedArray
             // getDataCache assumes offset is in TypedArray.BYTES_PER_ELEMENT size
@@ -640,3 +648,100 @@ WebGPURecorder._skipMethods = new Set([
     "pushErrorScope",
     "popErrorScope"
 ]);
+
+WebGPURecorder._formatInfo = {
+  "r8unorm": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 1 },
+  "r8snorm": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 1 },
+  "r8uint": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 1 },
+  "r8sint": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 1 },
+  "rg8unorm": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 2 },
+  "rg8snorm": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 2 },
+  "rg8uint": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 2 },
+  "rg8sint": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 2 },
+  "rgba8unorm": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 4 },
+  "rgba8unorm-srgb": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 4 },
+  "rgba8snorm": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 4 },
+  "rgba8uint": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 4 },
+  "rgba8sint": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 4 },
+  "bgra8unorm": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 4 },
+  "bgra8unorm-srgb": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 4 },
+  "r16uint": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 2 },
+  "r16sint": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 2 },
+  "r16float": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 2 },
+  "rg16uint": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 4 },
+  "rg16sint": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 4 },
+  "rg16float": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 4 },
+  "rgba16uint": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 8 },
+  "rgba16sint": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 8 },
+  "rgba16float": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 8 },
+  "r32uint": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 4 },
+  "r32sint": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 4 },
+  "r32float": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 4 },
+  "rg32uint": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 8 },
+  "rg32sint": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 8 },
+  "rg32float": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 8 },
+  "rgba32uint": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 16 },
+  "rgba32sint": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 16 },
+  "rgba32float": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 16 },
+  "rgb10a2unorm": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 4 },
+  "rg11b10ufloat": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 4 },
+  "rgb9e5ufloat": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 4 },
+  "stencil8": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 1 },
+  "depth16unorm": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 2 },
+  "depth32float": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 4 },
+  "depth24plus": { "blockWidth": 1, "blockHeight": 1 },
+  "depth24plus-stencil8": { "blockWidth": 1, "blockHeight": 1 },
+  "depth32float-stencil8": { "blockWidth": 1, "blockHeight": 1 },
+  "bc1-rgba-unorm": { "blockWidth": 4, "blockHeight": 4, "bytesPerBlock": 8 },
+  "bc1-rgba-unorm-srgb": { "blockWidth": 4, "blockHeight": 4, "bytesPerBlock": 8 },
+  "bc2-rgba-unorm": { "blockWidth": 4, "blockHeight": 4, "bytesPerBlock": 16 },
+  "bc2-rgba-unorm-srgb": { "blockWidth": 4, "blockHeight": 4, "bytesPerBlock": 16 },
+  "bc3-rgba-unorm": { "blockWidth": 4, "blockHeight": 4, "bytesPerBlock": 16 },
+  "bc3-rgba-unorm-srgb": { "blockWidth": 4, "blockHeight": 4, "bytesPerBlock": 16 },
+  "bc4-r-unorm": { "blockWidth": 4, "blockHeight": 4, "bytesPerBlock": 8 },
+  "bc4-r-snorm": { "blockWidth": 4, "blockHeight": 4, "bytesPerBlock": 8 },
+  "bc5-rg-unorm": { "blockWidth": 4, "blockHeight": 4, "bytesPerBlock": 16 },
+  "bc5-rg-snorm": { "blockWidth": 4, "blockHeight": 4, "bytesPerBlock": 16 },
+  "bc6h-rgb-ufloat": { "blockWidth": 4, "blockHeight": 4, "bytesPerBlock": 16 },
+  "bc6h-rgb-float": { "blockWidth": 4, "blockHeight": 4, "bytesPerBlock": 16 },
+  "bc7-rgba-unorm": { "blockWidth": 4, "blockHeight": 4, "bytesPerBlock": 16 },
+  "bc7-rgba-unorm-srgb": { "blockWidth": 4, "blockHeight": 4, "bytesPerBlock": 16 },
+  "etc2-rgb8unorm": { "blockWidth": 4, "blockHeight": 4, "bytesPerBlock": 8 },
+  "etc2-rgb8unorm-srgb": { "blockWidth": 4, "blockHeight": 4, "bytesPerBlock": 8 },
+  "etc2-rgb8a1unorm": { "blockWidth": 4, "blockHeight": 4, "bytesPerBlock": 8 },
+  "etc2-rgb8a1unorm-srgb": { "blockWidth": 4, "blockHeight": 4, "bytesPerBlock": 8 },
+  "etc2-rgba8unorm": { "blockWidth": 4, "blockHeight": 4, "bytesPerBlock": 16 },
+  "etc2-rgba8unorm-srgb": { "blockWidth": 4, "blockHeight": 4, "bytesPerBlock": 16 },
+  "eac-r11unorm": { "blockWidth": 4, "blockHeight": 4, "bytesPerBlock": 8 },
+  "eac-r11snorm": { "blockWidth": 4, "blockHeight": 4, "bytesPerBlock": 8 },
+  "eac-rg11unorm": { "blockWidth": 4, "blockHeight": 4, "bytesPerBlock": 16 },
+  "eac-rg11snorm": { "blockWidth": 4, "blockHeight": 4, "bytesPerBlock": 16 },
+  "astc-4x4-unorm": { "blockWidth": 4, "blockHeight": 4, "bytesPerBlock": 16 },
+  "astc-4x4-unorm-srgb": { "blockWidth": 4, "blockHeight": 4, "bytesPerBlock": 16 },
+  "astc-5x4-unorm": { "blockWidth": 5, "blockHeight": 4, "bytesPerBlock": 16 },
+  "astc-5x4-unorm-srgb": { "blockWidth": 5, "blockHeight": 4, "bytesPerBlock": 16 },
+  "astc-5x5-unorm": { "blockWidth": 5, "blockHeight": 5, "bytesPerBlock": 16 },
+  "astc-5x5-unorm-srgb": { "blockWidth": 5, "blockHeight": 5, "bytesPerBlock": 16 },
+  "astc-6x5-unorm": { "blockWidth": 6, "blockHeight": 5, "bytesPerBlock": 16 },
+  "astc-6x5-unorm-srgb": { "blockWidth": 6, "blockHeight": 5, "bytesPerBlock": 16 },
+  "astc-6x6-unorm": { "blockWidth": 6, "blockHeight": 6, "bytesPerBlock": 16 },
+  "astc-6x6-unorm-srgb": { "blockWidth": 6, "blockHeight": 6, "bytesPerBlock": 16 },
+  "astc-8x5-unorm": { "blockWidth": 8, "blockHeight": 5, "bytesPerBlock": 16 },
+  "astc-8x5-unorm-srgb": { "blockWidth": 8, "blockHeight": 5, "bytesPerBlock": 16 },
+  "astc-8x6-unorm": { "blockWidth": 8, "blockHeight": 6, "bytesPerBlock": 16 },
+  "astc-8x6-unorm-srgb": { "blockWidth": 8, "blockHeight": 6, "bytesPerBlock": 16 },
+  "astc-8x8-unorm": { "blockWidth": 8, "blockHeight": 8, "bytesPerBlock": 16 },
+  "astc-8x8-unorm-srgb": { "blockWidth": 8, "blockHeight": 8, "bytesPerBlock": 16 },
+  "astc-10x5-unorm": { "blockWidth": 10, "blockHeight": 5, "bytesPerBlock": 16 },
+  "astc-10x5-unorm-srgb": { "blockWidth": 10, "blockHeight": 5, "bytesPerBlock": 16 },
+  "astc-10x6-unorm": { "blockWidth": 10, "blockHeight": 6, "bytesPerBlock": 16 },
+  "astc-10x6-unorm-srgb": { "blockWidth": 10, "blockHeight": 6, "bytesPerBlock": 16 },
+  "astc-10x8-unorm": { "blockWidth": 10, "blockHeight": 8, "bytesPerBlock": 16 },
+  "astc-10x8-unorm-srgb": { "blockWidth": 10, "blockHeight": 8, "bytesPerBlock": 16 },
+  "astc-10x10-unorm": { "blockWidth": 10, "blockHeight": 10, "bytesPerBlock": 16 },
+  "astc-10x10-unorm-srgb": { "blockWidth": 10, "blockHeight": 10, "bytesPerBlock": 16 },
+  "astc-12x10-unorm": { "blockWidth": 12, "blockHeight": 10, "bytesPerBlock": 16 },
+  "astc-12x10-unorm-srgb": { "blockWidth": 12, "blockHeight": 10, "bytesPerBlock": 16 },
+  "astc-12x12-unorm": { "blockWidth": 12, "blockHeight": 12, "bytesPerBlock": 16 },
+  "astc-12x12-unorm-srgb": { "blockWidth": 12, "blockHeight": 12, "bytesPerBlock": 16 },
+};
