@@ -234,7 +234,7 @@ window.addEventListener('load', main);
 
     _downloadFile(data, filename) {
         const link = document.createElement('a');
-        link.href = URL.createObjectURL(new Blob([data], {type: 'application/javascript'}));
+        link.href = URL.createObjectURL(new Blob([data], {type: 'text/html'}));
         link.download = filename;
         document.body.appendChild(link);
         link.click();
