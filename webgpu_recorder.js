@@ -554,7 +554,7 @@ main();
             // offset is in bytes but source can be any TypedArray
             // getDataCache assumes offset is in TypedArray.BYTES_PER_ELEMENT size
             // so view the data as bytes.
-            let cacheIndex = this._getDataCache(new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength), offset, size);
+            let cacheIndex = this._getDataCache(new Uint8Array(buffer.buffer || buffer, buffer.byteOffset, buffer.byteLength), offset, size);
             args[1] = { __data: cacheIndex };
             args[2].offset = 0;
         } else if (method == "setBindGroup") {
