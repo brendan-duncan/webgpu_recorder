@@ -130,6 +130,13 @@ s += `
     requestAnimationFrame(renderFrame);
 }
 
+function setCanvasSize(canvas, width, height) {
+    if (canvas.width !== width || canvas.height !== height) {
+        canvas.width = width;
+        canvas.height = height;
+    }
+}
+
 function decodeBase64(str) {
     const base64codes = [
         255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255,
@@ -395,6 +402,8 @@ main();
                 self._recordLine(`${self._getObjectVariable(object)}.writeTexture(${self._stringifyObject(arguments[1])}, D[${cacheIndex}], {bytesPerRow:${bytesPerRow}}, ${self._stringifyObject(arguments[2])});`);
 
                 return;
+            } else if (method == "getCurrentTexture") {
+                self._recordLine(`setCanvasSize(${self._getObjectVariable(object)}.canvas, ${object.canvas.width}, ${object.canvas.height})`);
             }
 
             let result = origMethod.call(object, ...arguments);
