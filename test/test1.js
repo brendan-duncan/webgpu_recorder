@@ -11,17 +11,18 @@ async function main() {
         canvas.clientHeight * devicePixelRatio,
     ];
 
-    const presentationFormat = context.getPreferredFormat(adapter);
+    const presentationFormat = navigator.gpu.getPreferredCanvasFormat(adapter);;
 
+    canvas.width = presentationSize[0];
+    canvas.height = presentationSize[1]; 
     context.configure({
         device,
         format: presentationFormat,
-        size: presentationSize,
     });
 
     const triangleVertWGSL = `
-[[stage(vertex)]]
-fn main([[builtin(vertex_index)]] VertexIndex : u32) -> [[builtin(position)]] vec4<f32> {
+@vertex
+fn main(@builtin(vertex_index) VertexIndex : u32) -> @builtin(position) vec4<f32> {
   var pos = array<vec2<f32>, 3>(
       vec2<f32>(0.0, 0.5),
       vec2<f32>(-0.5, -0.5),
@@ -31,13 +32,14 @@ fn main([[builtin(vertex_index)]] VertexIndex : u32) -> [[builtin(position)]] ve
 }`;
 
     const redFragWGSL = `
-[[stage(fragment)]]
-fn main() -> [[location(0)]] vec4<f32> {
+@fragment
+fn main() -> @location(0) vec4<f32> {
   return vec4<f32>(1.0, 0.0, 0.0, 1.0);
 }`;
 
 
     const pipeline = device.createRenderPipeline({
+        layout: 'auto',
         vertex: {
             module: device.createShaderModule({
                 code: triangleVertWGSL,
@@ -69,7 +71,8 @@ fn main() -> [[location(0)]] vec4<f32> {
             colorAttachments: [
                 {
                     view: textureView,
-                    loadValue: { r: 0.2, g: g, b: 0.3, a: 1.0 },
+                    clearValue: { r: 0.2, g: g, b: 0.3, a: 1.0 },
+                    loadOp: 'clear',
                     storeOp: 'store',
                 },
             ],
@@ -80,7 +83,7 @@ fn main() -> [[location(0)]] vec4<f32> {
         const passEncoder = commandEncoder.beginRenderPass(renderPassDescriptor);
         passEncoder.setPipeline(pipeline);
         passEncoder.draw(3, 1, 0, 0);
-        passEncoder.endPass();
+        passEncoder.end();
 
         device.queue.submit([commandEncoder.finish()]);
         requestAnimationFrame(frame);

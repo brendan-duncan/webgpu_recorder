@@ -78,12 +78,6 @@ Open the downloaded HTML file in a WebGPU capable browser to play back the recor
 
 It is necessary to start the recorder prior to rendering so that all WebGPU objects are correctly recorded.
 
-You probably want a fixed size canvas. The problem, you have a flexible canvas size. At recording time
-the canvas is 788x650 (some arbitrary window size). You create a depth texture of that size to render
-with. At playback time the canvas is 800x600, the recording creates a 788x650 depth texture and tries
-to use it with a 788x650 canvas texture. You get an validation error that the sizes don't match. Solution,
-set your canvas(es) to fixed size and create the `WebGPURecorder` with the same size.
-
 It is best suited for small tests, as the recorded data can get quite large.
 
 All buffer and texture data is stored in the recording. The recording stores the data in base64 format to reduce file size, but it can still make the recording files large.

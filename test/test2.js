@@ -54,20 +54,20 @@ const cubeVertexArray = new Float32Array([
 ]);
 
 const basicVertWGSL = `
-[[block]] struct Uniforms {
-    modelViewProjectionMatrix : mat4x4<f32>;
+struct Uniforms {
+    modelViewProjectionMatrix : mat4x4<f32>,
 };
-[[binding(0), group(0)]] var<uniform> uniforms : Uniforms;
+@binding(0) @group(0) var<uniform> uniforms : Uniforms;
 
 struct VertexOutput {
-    [[builtin(position)]] Position : vec4<f32>;
-    [[location(0)]] fragUV : vec2<f32>;
-    [[location(1)]] fragPosition: vec4<f32>;
+    @builtin(position) Position : vec4<f32>,
+    @location(0) fragUV : vec2<f32>,
+    @location(1) fragPosition: vec4<f32>,
 };
   
-[[stage(vertex)]]
-fn main([[location(0)]] position : vec4<f32>,
-          [[location(1)]] uv : vec2<f32>) -> VertexOutput {
+@vertex
+fn main(@location(0) position : vec4<f32>,
+        @location(1) uv : vec2<f32>) -> VertexOutput {
     var output : VertexOutput;
     output.Position = uniforms.modelViewProjectionMatrix * position;
     output.fragUV = uv;
@@ -76,11 +76,11 @@ fn main([[location(0)]] position : vec4<f32>,
 }`;
 
 const vertexPositionColorWGSL = `
-[[binding(1), group(0)]] var u_texture : texture_2d<f32>;
-[[binding(2), group(0)]] var u_sampler : sampler;
-[[stage(fragment)]]
-fn main([[location(0)]] fragUV: vec2<f32>,
-        [[location(1)]] fragPosition: vec4<f32>) -> [[location(0)]] vec4<f32> {
+@binding(1) @group(0) var u_texture : texture_2d<f32>;
+@binding(2) @group(0) var u_sampler : sampler;
+@fragment
+fn main(@location(0) fragUV: vec2<f32>,
+        @location(1) fragPosition: vec4<f32>) -> @location(0) vec4<f32> {
   return textureSample(u_texture, u_sampler, fragUV);
 }`;
 
@@ -96,12 +96,13 @@ async function main() {
         canvas.clientWidth * devicePixelRatio,
         canvas.clientHeight * devicePixelRatio,
     ];
-    const presentationFormat = context.getPreferredFormat(adapter);
+    const presentationFormat = navigator.gpu.getPreferredCanvasFormat(adapter);
 
+    canvas.width = presentationSize[0];
+    canvas.height = presentationSize[1]; 
     context.configure({
         device,
         format: presentationFormat,
-        size: presentationSize,
     });
 
     // Create a vertex buffer from the cube data.
@@ -138,6 +139,7 @@ async function main() {
     const sampler = device.createSampler();
 
     const pipeline = device.createRenderPipeline({
+        layout: 'auto',
         vertex: {
             module: device.createShaderModule({
                 code: basicVertWGSL,
@@ -221,16 +223,16 @@ async function main() {
         colorAttachments: [
             {
                 view: undefined,
-                loadValue: { r: 0.5, g: 0.5, b: 0.5, a: 1.0 },
+                clearValue: { r: 0.5, g: 0.5, b: 0.5, a: 1.0 },
+                loadOp: 'clear',
                 storeOp: 'store',
             },
         ],
         depthStencilAttachment: {
             view: depthTexture.createView(),
-            depthLoadValue: 1.0,
+            depthClearValue: 1.0,
+            depthLoadOp: 'clear',
             depthStoreOp: 'store',
-            stencilLoadValue: 0,
-            stencilStoreOp: 'store',
         },
     };
 
@@ -277,7 +279,7 @@ async function main() {
         passEncoder.setBindGroup(0, bindGroup);
         passEncoder.setVertexBuffer(0, verticesBuffer);
         passEncoder.draw(cubeVertexCount, 1, 0, 0);
-        passEncoder.endPass();
+        passEncoder.end();
         device.queue.submit([commandEncoder.finish()]);
 
         requestAnimationFrame(frame);
