@@ -49,7 +49,7 @@ You can optionally configure the recorder
         "export": "WebGPURecord",
         "width": 800,
         "height": 600,
-        "removeUnusedResources": true
+        "removeUnusedResources": false
     });
 </script>
 ```
