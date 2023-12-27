@@ -48,7 +48,8 @@ You can optionally configure the recorder
         "frames": 100,
         "export": "WebGPURecord",
         "width": 800,
-        "height": 600
+        "height": 600,
+        "removeUnusedResources": true
     });
 </script>
 ```
@@ -59,6 +60,7 @@ Where
 * **export** is the basename of the generated HTML file.
 * **width** is the width of the canvas in the recording. This should match the width of the original canvas.
 * **height** is the height of the canvas in the recording. This should match the height of the original canvas.
+* **removeUnusedResources**: if true, resource commands not needed for rendering are removed, otherwise all commands are recorded.
 
 ## Play The Recording
 
