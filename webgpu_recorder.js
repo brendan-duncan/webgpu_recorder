@@ -121,12 +121,24 @@ class WebGPURecorder {
             if (this.config.removeUnusedResources) {
                 for (const obj of unusedObjects) {
                     for (let di = 0, dl = this._dataCacheObjects.length; di < dl; ++di) {
-                        const dataObj = this._dataCacheObjects[di];
-                        if (dataObj && dataObj.__id == obj) {
+                        let dataObj = this._dataCacheObjects[di];
+                        if (dataObj) {
+                            for (let li = dataObj.length - 1; li >= 0; --li) {
+                                if (dataObj[li].__id == obj) {
+                                    dataObj.splice(li, 1);
+                                }
+                            }
+                            if (dataObj.length == 0) {
+                                this._arrayCache[di].length = 0;
+                                this._arrayCache[di].type = "Uint8Array";
+                                this._arrayCache[di].array = new Uint8Array(0);
+                            }
+                        }
+                        /*if (dataObj && dataObj.__id == obj) {
                             this._arrayCache[di].length = 0;
                             this._arrayCache[di].type = "Uint8Array";
                             this._arrayCache[di].array = new Uint8Array(0);
-                        }
+                        }*/
                     }
                 }
             }
@@ -431,7 +443,7 @@ class WebGPURecorder {
                         for (let buffer of object.__mappedRanges) {
                             // Make a copy of the mappedRange buffer data as it is when unmap
                             // is called.
-                            let cacheIndex = self._getDataCache(buffer, 0, buffer.byteLength);
+                            let cacheIndex = self._getDataCache(buffer, 0, buffer.byteLength, buffer);
                             // Set the mappedRange buffer data in the recording to what is in the buffer
                             // at the time unmap is called.
                             self._recordLine(`new Uint8Array(${self._getObjectVariable(buffer)}).set(D[${cacheIndex}]);`, null);
@@ -450,9 +462,8 @@ class WebGPURecorder {
                     let bytesPerPixel = 4;
                     let bytesPerRow = arguments[0].source.width * bytesPerPixel;
     
-                    let cacheIndex = self._getDataCache(bytes, bytes.byteOffset, bytes.byteLength);
+                    let cacheIndex = self._getDataCache(bytes, bytes.byteOffset, bytes.byteLength, texture);
                     const texture = arguments[1]["texture"];
-                    self._dataCacheObjects[cacheIndex] = texture;
                     self._recordLine(`${self._getObjectVariable(object)}.writeTexture(${self._stringifyObject(method, arguments[1])}, D[${cacheIndex}], {bytesPerRow:${bytesPerRow}}, ${self._stringifyObject(method, arguments[2])});`, object);
     
                     return;
@@ -514,7 +525,7 @@ class WebGPURecorder {
                         s += this._getObjectVariable(this._adapter) + ".features";
                         continue;
                     } else if (key == "requiredLimits") {
-                        s += this._getObjectVariable(this._adapter) + ".limits";
+                        s += "_limits";
                         continue;
                     }
                 }
@@ -566,7 +577,7 @@ class WebGPURecorder {
             return s;
         }
     
-        _getDataCache(heap, offset, length) {
+        _getDataCache(heap, offset, length, object) {
             let self = this;
     
             function _heapAccessShiftForWebGPUHeap(heap) {
@@ -612,6 +623,13 @@ class WebGPURecorder {
                     array: arrayCopy
                 });
             }
+
+            if (object) {
+                if (!this._dataCacheObjects[cacheIndex]) {
+                    this._dataCacheObjects[cacheIndex] = [];
+                }
+                this._dataCacheObjects[cacheIndex].push(object);
+            }
             
             return cacheIndex;
         }
@@ -629,7 +647,7 @@ class WebGPURecorder {
                 let buffer = args[2];
                 let offset = args[3];
                 let size = args[4];
-                let cacheIndex = this._getDataCache(buffer, offset, size);
+                let cacheIndex = this._getDataCache(buffer, offset, size, buffer);
                 args[2] = { __data: cacheIndex };
                 args[3] = 0;
             } else if (method == "writeTexture") {
@@ -649,8 +667,7 @@ class WebGPURecorder {
                 // offset is in bytes but source can be any TypedArray
                 // getDataCache assumes offset is in TypedArray.BYTES_PER_ELEMENT size
                 // so view the data as bytes.
-                let cacheIndex = this._getDataCache(new Uint8Array(buffer.buffer || buffer, buffer.byteOffset, buffer.byteLength), offset, size);
-                this._dataCacheObjects[cacheIndex] = texture;
+                let cacheIndex = this._getDataCache(new Uint8Array(buffer.buffer || buffer, buffer.byteOffset, buffer.byteLength), offset, size, texture);
                 args[1] = { __data: cacheIndex };
                 args[2].offset = 0;
             } else if (method == "setBindGroup") {
@@ -658,12 +675,12 @@ class WebGPURecorder {
                     let buffer = args[2];
                     let offset = args[3];
                     let size = args[4];
-                    let offsets = this._getDataCache(buffer, offset, size);
+                    let offsets = this._getDataCache(buffer, offset, size, buffer);
                     args[2] = { __data: offsets };
                     args.length = 3;
                 } else if (args.length == 3) {
                     let buffer = args[2];
-                    let offsets = this._getDataCache(buffer, 0, buffer.length);
+                    let offsets = this._getDataCache(buffer, 0, buffer.length, buffer);
                     args[2] = { __data: offsets };
                     args.length = 3;
                 }
@@ -684,6 +701,13 @@ class WebGPURecorder {
                             }
                         }
                     }
+                }
+            } else if (method == "copyBufferToBuffer") {
+                if (this._unusedBuffers.has(args[0].__id)) {
+                    this._unusedBuffers.delete(args[0].__id);
+                }
+                if (this._unusedBuffers.has(args[2].__id)) {
+                    this._unusedBuffers.delete(args[2].__id);
                 }
             } else if (method == "setVertexBuffer") {
                 const buffer = args[1];
@@ -760,8 +784,9 @@ class WebGPURecorder {
         _recordCommand(async, object, method, result, args) {
             if (this._isRecording) {
                 if (result) {
-                    if (typeof(result) === "string")
+                    if (typeof(result) === "string") {
                         return;
+                    }
     
                     this._registerObject(result);
                 }
@@ -794,6 +819,16 @@ class WebGPURecorder {
     
                 if (result && typeof(result) == "object") {
                     this._wrapObject(result);
+                }
+
+                if (method == "requestAdapter") {
+                    this._recordLine(`const _limits = {};
+                    const exclude = new Set(["minSubgroupSize", "maxSubgroupSize"]);
+                    for (const x in xAdapter4.limits) {
+                      if (!exclude.has(x)) {
+                        _limits[x] = xAdapter4.limits[x];
+                      }
+                    }`, obj);
                 }
             }
         }
