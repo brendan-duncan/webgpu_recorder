@@ -452,18 +452,17 @@ class WebGPURecorder {
                     }
                 } else if (method == "copyExternalImageToTexture") {
                     origMethod.call(object, ...arguments);
-    
+   
                     // copyExternalImageToTexture uses ImageBitmap (or canvas or offscreenCanvas) as
                     // its source, which we can't record. ConvertcopyExternalImageToTexture to
                     // writeTexture, and record the bytes from the ImageBitmap. To do that, we need
                     // to draw the ImageBitmap into a canvas, and record the bytes from that.
                     // A very heavy process, but not sure what else to do.
-                    let bytes = self._getBytesFromImageSource(arguments[0].source);
-                    let bytesPerPixel = 4;
-                    let bytesPerRow = arguments[0].source.width * bytesPerPixel;
-    
-                    let cacheIndex = self._getDataCache(bytes, bytes.byteOffset, bytes.byteLength, texture);
+                    const bytes = self._getBytesFromImageSource(arguments[0].source);
+                    const bytesPerPixel = 4;
+                    const bytesPerRow = arguments[0].source.width * bytesPerPixel;
                     const texture = arguments[1]["texture"];
+                    const cacheIndex = self._getDataCache(bytes, bytes.byteOffset, bytes.byteLength, texture);
                     self._recordLine(`${self._getObjectVariable(object)}.writeTexture(${self._stringifyObject(method, arguments[1])}, D[${cacheIndex}], {bytesPerRow:${bytesPerRow}}, ${self._stringifyObject(method, arguments[2])});`, object);
     
                     return;
@@ -822,11 +821,12 @@ class WebGPURecorder {
                 }
 
                 if (method == "requestAdapter") {
+                    const adapter = this._getObjectVariable(result);
                     this._recordLine(`const _limits = {};
                     const exclude = new Set(["minSubgroupSize", "maxSubgroupSize"]);
-                    for (const x in xAdapter4.limits) {
+                    for (const x in ${adapter}.limits) {
                       if (!exclude.has(x)) {
-                        _limits[x] = xAdapter4.limits[x];
+                        _limits[x] = ${adapter}.limits[x];
                       }
                     }`, obj);
                 }
@@ -952,3 +952,31 @@ class WebGPURecorder {
       "astc-12x12-unorm": { "blockWidth": 12, "blockHeight": 12, "bytesPerBlock": 16 },
       "astc-12x12-unorm-srgb": { "blockWidth": 12, "blockHeight": 12, "bytesPerBlock": 16 },
     };
+
+
+// -------------
+// Auto start recording on script load if filename is provided:
+// webgpu_recorder.js?filename=foo
+function getParameterByName(name, url) {
+    name = name.replace(/[\[\]]/g, '\\$&');
+    const regex = new RegExp('[?&]' + name + '(=([^&#]*)|&|#|$)');
+    const results = regex.exec(url);
+    if (!results) return null;
+    if (!results[2]) return '';
+    return decodeURIComponent(results[2].replace(/\+/g, ' '));
+}
+
+function main() {
+    const filename = getParameterByName("filename", document.currentScript.src);
+    const frames = getParameterByName("frames", document.currentScript.src);
+    const removeUnusedResources = getParameterByName("removeUnusedResources", document.currentScript.src);
+    if (filename) {
+        new WebGPURecorder({
+            "frames": frames || 1,
+            "export": filename,
+            "removeUnusedResources": !!removeUnusedResources
+        });
+    }
+}
+
+main();
