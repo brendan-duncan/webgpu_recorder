@@ -7,7 +7,7 @@ class WebGPURecorder {
                 exportName: options.export || "WebGPURecord",
                 canvasWidth: options.width || 800,
                 canvasHeight: options.height || 600,
-                removeUnusedResources: !!options.removeUnusedResources,
+                removeUnusedResources: !!options.removeUnusedResources
             };
     
             this._objectIndex = 1;
@@ -23,8 +23,9 @@ class WebGPURecorder {
             this._arrayCache = [];
             this._totalData = 0;
     
-            if (!navigator.gpu)
+            if (!navigator.gpu) {
                 return;
+            }
     
             this._isRecording = true;
             this._initalized = true;
@@ -143,7 +144,8 @@ class WebGPURecorder {
                 }
             }
             let s = 
-    `<html>
+    `<!DOCTYPE html>
+    <html>
         <body style="text-align: center;">
             <canvas id="#webgpu" width=${this.config.canvasWidth} height=${this.config.canvasHeight}></canvas>
             <script>
@@ -313,8 +315,9 @@ class WebGPURecorder {
         }
     
         _wrapCanvas(c) {
-            if (c.__id)
+            if (c.__id) {
                 return;
+            }
             this._registerObject(c);
             let self = this;
             let __getContext = c.getContext;
@@ -521,10 +524,10 @@ class WebGPURecorder {
                 s += `"${key}":`;
                 if (method == "requestDevice") {
                     if (key == "requiredFeatures") {
-                        s += this._getObjectVariable(this._adapter) + ".features";
+                        s += "requiredFeatures";
                         continue;
                     } else if (key == "requiredLimits") {
-                        s += "_limits";
+                        s += "requiredLimits";
                         continue;
                     }
                 }
@@ -809,11 +812,23 @@ class WebGPURecorder {
                 } else if (method == "writeBuffer") {
                     obj = args[0];
                 }
+
+                // Add a blank line before render and compute passes to make them easier to
+                // identify in the recording file.
+                if (method == "beginRenderPass" || method == "beginComputePass") {
+                    this._recordLine("\n", null);
+                }
     
                 if (result) {
                     this._recordLine(`${this._getObjectVariable(result)} = ${async}${this._getObjectVariable(object)}.${method}(${this._stringifyArgs(method, args)});`, obj);
                 } else {
                     this._recordLine(`${async}${this._getObjectVariable(object)}.${method}(${this._stringifyArgs(method, args)});`, obj);
+                }
+
+                // Add a blank line after ending render and compute passes to make them easier
+                // to identify in the recording file.
+                if (method == "end") {
+                    this._recordLine("\n", null);
                 }
     
                 if (result && typeof(result) == "object") {
@@ -822,11 +837,15 @@ class WebGPURecorder {
 
                 if (method == "requestAdapter") {
                     const adapter = this._getObjectVariable(result);
-                    this._recordLine(`const _limits = {};
+                    this._recordLine(`const requiredFeatures = [];
+                    for (const x of ${adapter}.features) {
+                        requiredFeatures.push(x);
+                    }`, obj);
+                    this._recordLine(`const requiredLimits = {};
                     const exclude = new Set(["minSubgroupSize", "maxSubgroupSize"]);
                     for (const x in ${adapter}.limits) {
                       if (!exclude.has(x)) {
-                        _limits[x] = ${adapter}.limits[x];
+                        requiredLimits[x] = ${adapter}.limits[x];
                       }
                     }`, obj);
                 }
