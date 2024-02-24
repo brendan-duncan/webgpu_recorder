@@ -1,5 +1,9 @@
 # WebGPU Recorder
 
+**Note** The WebGPU Recorder tool is incorperated into my general WebGPU debugging tool, [WebGPU Inspector](https://github.com/brendan-duncan/webgpu_inspector).
+
+---
+
 WebGPU Recorder is a debugging tool for WebGPU.
 
 It is a playback recorder, designed to capture all WebGPU commands and data, with the ability to play back the commands to recreate the render.
@@ -8,9 +12,7 @@ It captures all WebGPU commands, buffers, and textures, over a given number of f
 
 This can be used to diagnose issues with WebGPU rendering by eliminating everything but the raw WebGPU commands. This is also very helpful for submitting self-contained reproduction examples for bug reports.
 
-## NOTE
 
-The WebGPU Recorder tool is incorperated into my general WebGPU debugging tool, [WebGPU Inspector](https://github.com/brendan-duncan/webgpu_inspector).
 
 ## Usage
 
