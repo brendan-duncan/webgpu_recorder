@@ -1,0 +1,44 @@
+{
+  "name": "webgpu_recorder",
+  "version": "1.0.0",
+  "description": "WebGPU command and data recorder.",
+  "author": "Brendan Duncan",
+  "license": "MIT",
+  "main": "wgsl_recorder.js",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/brendan-duncan/webgpu_recorder"
+  },
+  "homepage": "https://github.com/brendan-duncan/webgpu_recorder",
+  "bugs": {
+    "url": "https://github.com/brendan-duncan/webgpu_recorder/issues"
+  },
+  "sideEffects": false,
+  "files": [
+    "webgpu_recorder.js",
+    "LICENSE.md",
+    "package.json",
+    "README.md"
+  ],
+  "directories": {
+    "test": "test"
+  },
+  "scripts": {
+  },
+  "keywords": [
+    "webgpu_recorder",
+    "webgpu",
+    "javascript",
+    "html5"
+  ],
+  "devDependencies": {
+  },
+  "jspm": {
+    "files": [
+      "package.json",
+      "LICENSE.md",
+      "README.md",
+      "webgpu_recorder.js"
+    ]
+  }
+}
