@@ -14,31 +14,25 @@ This can be used to diagnose issues with WebGPU rendering by eliminating everyth
 
 ## Usage
 
-### Load From CDN
+### Loading and Starting the WebGPU Recorder
 
-You can load the script through a CDN so you don't have to store it locally and make sure you're always using the latest version of the recorder.
-
-```html
-<script id="webgpu_recorder" type="module">
-    import {WebGPURecorder} from "https://cdn.jsdelivr.net/gh/brendan-duncan/webgpu_recorder/webgpu_recorder.js";
-    new WebGPURecorder({
-        "frames": 100,
-        "export": "test"
-    });
-</script>
-````
-
-### Load From Local Script Reference
-
-If you prefer to host your own version, copy the script to your project and load it by adding the following to your project's HTML.
+The WebGPU Recorder script is an ES6 module and can be loaded via
 
 ```html
 <script id="webgpu_recorder" type="module">
     import {WebGPURecorder} from "webgpu_recorder.js";
-    new WebGPURecorder({
-        "frames": 100,
-        "export": "test"
-    });
+    new WebGPURecorder(); // Create and start the WebGPU Recorder
+</script>
+````
+
+### Load From CDN
+
+The webgpu_recorder.js script can be loaded from a CDN so you don't have to store it locally and make sure you're always using the latest version of the recorder.
+
+```html
+<script id="webgpu_recorder" type="module">
+    import {WebGPURecorder} from "https://cdn.jsdelivr.net/gh/brendan-duncan/webgpu_recorder/webgpu_recorder.js";
+    new WebGPURecorder(); // Create and start the WebGPU Recorder
 </script>
 ````
 
