@@ -25,7 +25,21 @@ The WebGPU Recorder script is an ES6 module and can be loaded via
 </script>
 ````
 
-### Load From CDN
+### From NPM
+
+webgpu_recorder can be loaded via NPM
+
+```
+npm install webgpu_recorder
+```
+
+Then you can import the module from
+```javascript
+import {WebGPURecorder} from "webgpu_recorder/webgpu_recorder.js";
+new WebGPURecorder(); // Create and start the WebGPU Recorder
+```
+
+### From CDN
 
 The webgpu_recorder.js script can be loaded from a CDN so you don't have to store it locally and make sure you're always using the latest version of the recorder.
 
