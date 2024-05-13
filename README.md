@@ -12,8 +12,6 @@ It captures all WebGPU commands, buffers, and textures, over a given number of f
 
 This can be used to diagnose issues with WebGPU rendering by eliminating everything but the raw WebGPU commands. This is also very helpful for submitting self-contained reproduction examples for bug reports.
 
-
-
 ## Usage
 
 ### Load From CDN
@@ -44,7 +42,7 @@ If you prefer to host your own version, copy the script to your project and load
 </script>
 ````
 
-### Start The Recorder
+### Starting The Recorder
 
 The **WebGPURecorder** class will start the recorder with the options provided to the constructor.
 
