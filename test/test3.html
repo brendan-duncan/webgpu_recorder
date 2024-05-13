@@ -1,9 +1,9 @@
 <html>
     <body>
         <canvas id="#webgpu" width=800 height=600></canvas>
-        <script src="../webgpu_recorder.js"></script>
-        <script id="webgpu_recorder">
-        webgpuRecorder = new WebGPURecorder({
+        <script id="webgpu_recorder" type="module">
+        import {WebGPURecorder} from "../webgpu_recorder.js";
+        window.webgpuRecorder = new WebGPURecorder({
             "frames": 1,
             "export": "test3",
             "width": 800,

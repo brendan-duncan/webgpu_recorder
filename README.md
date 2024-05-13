@@ -21,7 +21,13 @@ This can be used to diagnose issues with WebGPU rendering by eliminating everyth
 You can load the script through a CDN so you don't have to store it locally and make sure you're always using the latest version of the recorder.
 
 ```html
-<script src="https://cdn.jsdelivr.net/gh/brendan-duncan/webgpu_recorder/webgpu_recorder.js"></script>
+<script id="webgpu_recorder" type="module">
+    import {WebGPURecorder} from "https://cdn.jsdelivr.net/gh/brendan-duncan/webgpu_recorder/webgpu_recorder.js";
+    new WebGPURecorder({
+        "frames": 100,
+        "export": "test"
+    });
+</script>
 ````
 
 ### Load From Local Script Reference
@@ -29,18 +35,18 @@ You can load the script through a CDN so you don't have to store it locally and 
 If you prefer to host your own version, copy the script to your project and load it by adding the following to your project's HTML.
 
 ```html
-<script src="webgpu_recorder.js"></script>
+<script id="webgpu_recorder" type="module">
+    import {WebGPURecorder} from "webgpu_recorder.js";
+    new WebGPURecorder({
+        "frames": 100,
+        "export": "test"
+    });
+</script>
 ````
 
 ### Start The Recorder
 
-Once the recorder script has been loaded in your app, you can instantiate the recorder by using the following:
-
-```html
-<script>
-    new WebGPURecorder();
-</script>
-```
+The **WebGPURecorder** class will start the recorder with the options provided to the constructor.
 
 Because the recorder needs to record all commands and data, it starts recording as soon as it is constructed, and will continue recording for the maximum number of frames. **The recorder should be created before any rendering code starts so it has a chance to wrap WebGPU.**
 
@@ -48,25 +54,56 @@ The recording will download automatically as an HTML file with embedded Javascri
 
 You can optionally configure the recorder
 
-```html
-<script>
-    new WebGPURecorder({
-        "frames": 100,
-        "export": "WebGPURecord",
-        "width": 800,
-        "height": 600,
-        "removeUnusedResources": false
-    });
-</script>
+```javascript
+new WebGPURecorder({
+    "frames": 100,
+    "export": "WebGPURecord",
+    "removeUnusedResources": false,
+    "download": true
+});
 ```
 
 Where
 
-* **frames** is the maximum number of frames to record.
-* **export** is the basename of the generated HTML file.
-* **width** is the width of the canvas in the recording. This should match the width of the original canvas.
-* **height** is the height of the canvas in the recording. This should match the height of the original canvas.
+* **frames**: the maximum number of frames to record.
+* **export**: the name of the generated HTML file, as ${export}.html
 * **removeUnusedResources**: if true, resource commands not needed for rendering are removed, otherwise all commands are recorded.
+* **download**: if true, the html will be downloaded.
+
+## Recording From a Web Worker
+
+Recording from a web worker rendering to an offscreen canvas requires a little more work, due to restrictions of web workers.
+
+When WebGPURecorder is run from a worker thread, instead of downloading the generated html, it will post a message back to the main thread with the data. The main thread can listen to the worker messages, and when it recieves the "webgpu_record_data" message, it can call the "webgpu_recorder_download_data" function to trigger the browser to download the generated html file.
+
+#### Worker.html
+
+```html
+<script type="module">
+    import { webgpu_recorder_download_data } from "webgpu_recorder.js";
+    const worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
+    worker.addEventListener('message', (ev) => {
+        switch (ev.data.type) {
+            case "webgpu_record_data":
+                webgpu_recorder_download_data(ev.data.data, ev.data.filename);
+                break;
+        }
+    });
+    // ...
+</script>
+```
+
+#### Worker.js
+
+```html
+import {WebGPURecorder} from "webgpu_recorder.js";
+async function run(canvas) {
+    new WebGPURecorder({
+        "frames": 10,
+        "export": "WebGPURecord"});
+    // ...
+}
+```
 
 ## Play The Recording
 

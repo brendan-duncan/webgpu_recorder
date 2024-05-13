@@ -1,4 +1,16 @@
-class WebGPURecorder {
+export function webgpu_recorder_download_data(data, filename) {
+  try {
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(new Blob([data], { type: "text/html" }));
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  } catch (e) {
+  }
+}
+
+export class WebGPURecorder {
   // public:
   constructor(options) {
     options = options || {};
@@ -61,14 +73,16 @@ class WebGPURecorder {
     const self = this;
 
     // Capture any dynamically created canvases
-    const __createElement = document.createElement;
-    document.createElement = function (type) {
-      const element = __createElement.call(document, type);
-      if (type === "canvas") {
-        self._wrapCanvas(element);
-      }
-      return element;
-    };
+    if (self.document) {
+      const __createElement = document.createElement;
+      document.createElement = function (type) {
+        const element = __createElement.call(document, type);
+        if (type === "canvas") {
+          self._wrapCanvas(element);
+        }
+        return element;
+      };
+    }
 
     // Wrap requestAnimationFrame so it can keep track of per-frame recording and know when
     // the maximum number of frames has been reached.
@@ -77,8 +91,8 @@ class WebGPURecorder {
     // we would need to keep track of things like shader creation/deletion that can happen
     // at arbitrary frames prior to the start, for any objects used within that recorded
     // duration.
-    const __requestAnimationFrame = window.requestAnimationFrame;
-    window.requestAnimationFrame = function (cb) {
+    const __requestAnimationFrame = requestAnimationFrame;
+    requestAnimationFrame = function (cb) {
       function callback(timestamp) {
         self._frameStart(timestamp);
         const result = cb(timestamp);
@@ -293,14 +307,10 @@ class WebGPURecorder {
 
   _downloadFile(data, filename) {
     if (this.config.download) {
-      try {
-        const link = document.createElement("a");
-        link.href = URL.createObjectURL(new Blob([data], { type: "text/html" }));
-        link.download = filename;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-      } catch (e) {
+      if (self.document) {
+        webgpu_recorder_download_data(data, filename);
+      } else {
+        self.postMessage({ type: "webgpu_record_data", data, filename });
       }
     }
 
@@ -367,10 +377,12 @@ class WebGPURecorder {
   }
 
   _wrapCanvases() {
-    const canvases = document.getElementsByTagName("canvas");
-    for (let i = 0; i < canvases.length; ++i) {
-      const c = canvases[i];
-      this._wrapCanvas(c);
+    if (self.document) {
+      const canvases = document.getElementsByTagName("canvas");
+      for (let i = 0; i < canvases.length; ++i) {
+        const c = canvases[i];
+        this._wrapCanvas(c);
+      }
     }
   }
 
@@ -1282,25 +1294,27 @@ class GPUObjectWrapper {
 }
 
 
-function main() {
-  // If the script tag has a filename attribute, then auto start recording.
-  const script = document.getElementById("__webgpu_recorder");
-  if (script) {
-    const filename = script.getAttribute("filename");
-    const frames = script.getAttribute("frames");
-    const messageRecording = script.getAttribute("messageRecording");
-    const removeUnusedResources = script.getAttribute("removeUnusedResources");
-    const download = script.getAttribute("download");
-    if (filename) {
-      new WebGPURecorder({
-        "frames": frames || 1,
-        "export": filename,
-        "removeUnusedResources": !!removeUnusedResources,
-        "messageRecording": !!messageRecording,
-        "download": download === null ? true : download === "false" ? false : download === "true" ? true : download
-      });
-    }
+if (self.document != undefined) {
+  function main() {
+    // If the script tag has a filename attribute, then auto start recording.
+      const script = document.getElementById("__webgpu_recorder");
+      if (script) {
+        const filename = script.getAttribute("filename");
+        const frames = script.getAttribute("frames");
+        const messageRecording = script.getAttribute("messageRecording");
+        const removeUnusedResources = script.getAttribute("removeUnusedResources");
+        const download = script.getAttribute("download");
+        if (filename) {
+          new WebGPURecorder({
+            "frames": frames || 1,
+            "export": filename,
+            "removeUnusedResources": !!removeUnusedResources,
+            "messageRecording": !!messageRecording,
+            "download": download === null ? true : download === "false" ? false : download === "true" ? true : download
+          });
+        }
+      }
   }
-}
 
-main();
+  main();
+}

@@ -1,13 +1,11 @@
 <html>
     <body>
         <canvas id="#webgpu" width=800 height=600></canvas>
-        <script src="../webgpu_recorder.js"></script>
-        <script id="webgpu_recorder">
+        <script id="webgpu_recorder" type="module">
+            import {WebGPURecorder} from "../webgpu_recorder.js";
             new WebGPURecorder({
                 "frames": 100,
-                "export": "test1",
-                "width": 800,
-                "height": 600
+                "export": "test1"
             });
         </script>
         <script src="test1.js"></script>
