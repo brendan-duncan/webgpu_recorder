@@ -1,3 +1,7 @@
+const _postMessage = self.postMessage;
+const _dispatchEvent = self.dispatchEvent;
+const _document = self.document;
+
 export function webgpu_recorder_download_data(data, filename) {
   try {
     const link = document.createElement("a");
@@ -73,10 +77,10 @@ export class WebGPURecorder {
     const self = this;
 
     // Capture any dynamically created canvases
-    if (self.document) {
+    if (_document) {
       const __createElement = document.createElement;
-      document.createElement = function (type) {
-        const element = __createElement.call(document, type);
+      _document.createElement = function (type) {
+        const element = __createElement.call(_document, type);
         if (type === "canvas") {
           self._wrapCanvas(element);
         }
@@ -305,12 +309,16 @@ export class WebGPURecorder {
     });
   }
 
+  _dispatchEvent(message) {
+    _dispatchEvent(new CustomEvent("__WebGPUInspector", { detail: message }));
+  }
+
   _downloadFile(data, filename) {
     if (this.config.download) {
-      if (self.document) {
+      if (_document) {
         webgpu_recorder_download_data(data, filename);
       } else {
-        self.postMessage({ type: "webgpu_record_data", data, filename });
+        _postMessage({ type: "webgpu_record_data", data, filename });
       }
     }
 
@@ -322,14 +330,14 @@ export class WebGPURecorder {
         count += this._frameCommandObjects[i].length;
       }
 
-      window.postMessage({ action: "webgpu_record_data_count", count: this._arrayCache.length });
+      this._dispatchEvent({ action: "webgpu_record_data_count", count: this._arrayCache.length });
 
       let index = 0;
       let frame = -1;
       const action = "webgpu_record_command";
       for (let i = 0; i < this._initializeCommandObjects.length; ++i) {
         const command = this._initializeCommandObjects[i];
-        window.postMessage({ action, command, commandIndex: i, frame, index, count });
+        this._dispatchEvent({ action, command, commandIndex: i, frame, index, count });
         index++;
       }
 
@@ -337,7 +345,7 @@ export class WebGPURecorder {
         const commands = this._frameCommandObjects[frame];
         for (let j = 0; j < commands.length; ++j) {
           const command = commands[j];
-          window.postMessage({ action, command, commandIndex: j, frame, index, count });
+          this._dispatchEvent({ action, command, commandIndex: j, frame, index, count });
           index++;
         }
       }
@@ -350,7 +358,7 @@ export class WebGPURecorder {
           const size = a.length;
           const type = a.type;
           const data = this._encodedData[index];
-          window.postMessage({ action, data, type, size, index, count });
+          this._dispatchEvent({ action, data, type, size, index, count });
         }
       }
     }
@@ -377,8 +385,8 @@ export class WebGPURecorder {
   }
 
   _wrapCanvases() {
-    if (self.document) {
-      const canvases = document.getElementsByTagName("canvas");
+    if (_document) {
+      const canvases = _document.getElementsByTagName("canvas");
       for (let i = 0; i < canvases.length; ++i) {
         const c = canvases[i];
         this._wrapCanvas(c);
@@ -1244,6 +1252,19 @@ class GPUObjectWrapper {
     GPUCanvasContext.prototype.configure = this._wrapMethod("configure", GPUCanvasContext.prototype.configure);
     GPUCanvasContext.prototype.unconfigure = this._wrapMethod("unconfigure", GPUCanvasContext.prototype.unconfigure);
     GPUCanvasContext.prototype.getCurrentTexture = this._wrapMethod("getCurrentTexture", GPUCanvasContext.prototype.getCurrentTexture);
+
+    GPURenderBundleEncoder.prototype.draw = this._wrapMethod("draw", GPURenderBundleEncoder.prototype.draw);
+    GPURenderBundleEncoder.prototype.drawIndexed = this._wrapMethod("drawIndexed", GPURenderBundleEncoder.prototype.drawIndexed);
+    GPURenderBundleEncoder.prototype.drawIndirect = this._wrapMethod("drawIndirect", GPURenderBundleEncoder.prototype.drawIndirect);
+    GPURenderBundleEncoder.prototype.drawIndexedIndirect = this._wrapMethod("drawIndexedIndirect", GPURenderBundleEncoder.prototype.drawIndexedIndirect);
+    GPURenderBundleEncoder.prototype.finish = this._wrapMethod("finish", GPURenderBundleEncoder.prototype.finish);
+    GPURenderBundleEncoder.prototype.insertDebugMarker = this._wrapMethod("insertDebugMarker", GPURenderBundleEncoder.prototype.insertDebugMarker);
+    GPURenderBundleEncoder.prototype.popDebugGroup = this._wrapMethod("popDebugGroup", GPURenderBundleEncoder.prototype.popDebugGroup);
+    GPURenderBundleEncoder.prototype.pushDebugGroup = this._wrapMethod("pushDebugGroup", GPURenderBundleEncoder.prototype.pushDebugGroup);
+    GPURenderBundleEncoder.prototype.setBindGroup = this._wrapMethod("setBindGroup", GPURenderBundleEncoder.prototype.setBindGroup);
+    GPURenderBundleEncoder.prototype.setIndexBuffer = this._wrapMethod("setIndexBuffer", GPURenderBundleEncoder.prototype.setIndexBuffer);
+    GPURenderBundleEncoder.prototype.setPipeline = this._wrapMethod("setPipeline", GPURenderBundleEncoder.prototype.setPipeline);
+    GPURenderBundleEncoder.prototype.setVertexBuffer = this._wrapMethod("setVertexBuffer", GPURenderBundleEncoder.prototype.setVertexBuffer);
   }
 
   _wrapMethod(method, origMethod) {
@@ -1294,10 +1315,10 @@ class GPUObjectWrapper {
 }
 
 
-if (self.document != undefined) {
+if (_document != undefined) {
   function main() {
     // If the script tag has a filename attribute, then auto start recording.
-      const script = document.getElementById("__webgpu_recorder");
+      const script = _document.getElementById("__webgpu_recorder");
       if (script) {
         const filename = script.getAttribute("filename");
         const frames = script.getAttribute("frames");
