@@ -243,7 +243,7 @@ export class WebGPURecorder {
                 await frames[frame]();
             } catch (err) {
                 console.log("Error Frame:", frame);
-                console.error(err);
+                console.error(err.message);
             }
             frame++;
         }
@@ -310,7 +310,14 @@ export class WebGPURecorder {
   }
 
   _dispatchEvent(message) {
-    _dispatchEvent(new CustomEvent("__WebGPUInspector", { detail: message }));
+    message.__webgpuRecorder = true;
+    message.__webgpuRecorderPage = true;
+    message.__webgpuRecorderWorker = !_document;
+    if (_document) {
+      _dispatchEvent(new CustomEvent("__WebGPURecorder", { detail: message }));
+    } else {
+      _postMessage(message);
+    }
   }
 
   _downloadFile(data, filename) {
@@ -318,7 +325,7 @@ export class WebGPURecorder {
       if (_document) {
         webgpu_recorder_download_data(data, filename);
       } else {
-        _postMessage({ type: "webgpu_record_data", data, filename });
+        _postMessage({ type: "webgpu_record_download", data, filename });
       }
     }
 
@@ -1314,28 +1321,216 @@ class GPUObjectWrapper {
   }
 }
 
+// Because of how WebGPURecorder is injected into WebWorkers, worker scripts lose their local
+// path context. This code snippet fixes that by prepending the base address to all
+// fetch, Request, URL, and WebSocket requests.
+let _webgpuHostAddress = "<%=_webgpuHostAddress%>";
+let _webgpuBaseAddress = "<%=_webgpuBaseAddress%>";
 
-if (_document != undefined) {
-  function main() {
-    // If the script tag has a filename attribute, then auto start recording.
-      const script = _document.getElementById("__webgpu_recorder");
-      if (script) {
-        const filename = script.getAttribute("filename");
-        const frames = script.getAttribute("frames");
-        const messageRecording = script.getAttribute("messageRecording");
-        const removeUnusedResources = script.getAttribute("removeUnusedResources");
-        const download = script.getAttribute("download");
-        if (filename) {
-          new WebGPURecorder({
-            "frames": frames || 1,
-            "export": filename,
-            "removeUnusedResources": !!removeUnusedResources,
-            "messageRecording": !!messageRecording,
-            "download": download === null ? true : download === "false" ? false : download === "true" ? true : download
-          });
-        }
-      }
+const _URL = URL;
+
+function _getFixedUrl(url) {
+  if (_webgpuHostAddress.startsWith("<%=")) {
+    return url;
   }
 
-  main();
+  if (url?.constructor === String) {
+    if (url.startsWith("http://") || url.startsWith("https://") || url.startsWith("ws://") ||
+        url.startsWith("wss://")|| url.startsWith("blob:") || url.startsWith("data:")){
+      return url;
+    }
+    try {
+      const _url = new _URL(url);
+    if (_url.protocol) {
+      return url;
+    }
+    } catch (e) {
+    }
+
+    if (url.startsWith("/")) {
+      return `${_webgpuHostAddress}/${url}`;
+    } else {
+      return `${_webgpuBaseAddress}/${url}`;
+    }
+  }
+  return url;
 }
+  
+const _origFetch = fetch;
+self.fetch = function (input, init) {
+  let url = input instanceof Request ? input.url : input;
+  url = _getFixedUrl(url);
+  return _origFetch(url, init);
+};
+
+URL = new Proxy(URL, {
+  construct(target, args, newTarget) {
+    if (args.length > 0) {
+      args[0] = _getFixedUrl(args[0]);
+    }
+    return new target(...args);
+  }
+});
+
+WebSocket = new Proxy(WebSocket, {
+  construct(target, args, newTarget) {
+    if (args.length > 0) {
+      args[0] = _getFixedUrl(args[0]);
+    }
+    return new target(...args);
+  }
+});
+
+Request = new Proxy(Request, {
+  construct(target, args, newTarget) {
+    if (args.length > 0) {
+      args[0] = _getFixedUrl(args[0]);
+    }
+    return new target(...args);
+  },
+});
+
+// Intercept Worker creation to inject inspector
+Worker = new Proxy(Worker, {
+  construct(target, args, newTarget) {
+    // Inject inspector before the worker loads
+    let src = `self.__webgpu_src = ${self.__webgpu_src.toString()};self.__webgpu_src();`;
+
+    const url = args[0];
+    const _url = new _URL(url);
+    _webgpuHostAddress = `${_url.protocol}//${_url.host}`;
+    const baseDir = _url.pathname.substring(0, _url.pathname.lastIndexOf("/"));
+    _webgpuBaseAddress = `${_webgpuHostAddress}${baseDir}`;
+
+    src = src.replaceAll(`<%=_webgpuHostAddress%>`, `${_webgpuHostAddress}`);
+    src = src.replaceAll(`<%=_webgpuBaseAddress%>`, `${_webgpuBaseAddress}`);
+
+    if (self._webgpu_recorder_init) {
+      const filename = self._webgpu_recorder_init.filename;
+      const frames = self._webgpu_recorder_init.frames;
+      const messageRecording = self._webgpu_recorder_init.messageRecording;;
+      const removeUnusedResources = self._webgpu_recorder_init.removeUnusedResources;
+      const download = self._webgpu_recorder_init.download;
+      const webgpuRecorderConfig = {
+          "frames": frames || 1,
+          "export": filename,
+          "removeUnusedResources": !!removeUnusedResources,
+          "messageRecording": !!messageRecording,
+          "download": download === null ? true : download === "false" ? false : download === "true" ? true : download
+      }
+      src = src.replaceAll(`<%=webgpuRecorderConfig%>`, JSON.stringify(webgpuRecorderConfig));
+    }
+
+    if (args.length > 1 && args[1].type === 'module') {
+      src += `import ${JSON.stringify(args[0])};`;
+    } else {
+      src += `importScripts(${JSON.stringify(args[0])});`;
+    }
+
+    let blob = new Blob([src]);
+    blob = blob.slice(0, blob.size, "text/javascript");
+    args[0] = URL.createObjectURL(blob);
+
+    const backing = new target(...args);
+    backing.__webgpuRecorder = true;
+
+    window.addEventListener("__WebGPURecorder", (event) => {
+      // Forward messages from the page to the worker, if the worker hasn't been terminated,
+      // the message is from the inspector, and the message is not from the worker.
+      if (backing.__webgpuRecorder && event.detail.__webgpuRecorder &&
+        !event.detail.__webgpuRecorderPage) {
+        backing.postMessage(event.detail);
+      }
+    });
+
+    backing.addEventListener("message", (event) => {
+      if (event.data.type === "webgpu_record_download") {
+        webgpu_recorder_download_data(event.data.data, event.data.filename);
+      } else if (event.data.__webgpuRecorder) {
+        window.dispatchEvent(new CustomEvent("__WebGPURecorder", { detail: event.data }));
+      }
+    });
+
+    return new Proxy(backing, {
+      get(target, prop, receiver) {
+        // Intercept event handlers to hide the inspectors messages
+        if (prop === 'addEventListener') {
+          return function () {
+            if (arguments[0] === 'message') {
+              const origHandler = arguments[1];
+              arguments[1] = function () {
+                if (!arguments[0].data.__webGPURecorder) {
+                  origHandler(...arguments);
+                }
+              };
+            }
+
+            return target.addEventListener(...arguments);
+          };
+        }
+
+        // Intercept worker termination and remove it from list so we don't send
+        // messages to a terminated worker.
+        if (prop === 'terminate') {
+          return function () {
+            const result = target.terminate(...arguments);
+            target.__WebGPURecorder = false;
+            return result;
+          };
+        }
+
+        if (prop in target) {
+          if (typeof target[prop] === 'function') {
+            return target[prop].bind(target);
+          } else {
+            return target[prop];
+          }
+        }
+      },
+      set(target, prop, newValue, receiver) {
+        target[prop] = newValue;
+        return true;
+      }
+    })
+  },
+});
+
+export let __webgpuRecorder = null;
+(() => {
+  // If the script tag has a filename attribute, then auto start recording.
+  let webgpuRecorderConfig = null;
+
+  const webgpuRecorderConfigStr = `<%=webgpuRecorderConfig%>`;
+  if (!webgpuRecorderConfigStr.startsWith("<%=")) {
+    try {
+      webgpuRecorderConfig = JSON.parse(webgpuRecorderConfigStr);
+    } catch (e) {}
+  }
+
+  if (!webgpuRecorderConfig && _document != undefined) {
+    const script = _document.getElementById("__webgpu_recorder");
+    if (script) {
+      initialized = true;
+      const filename = script.getAttribute("filename");
+      const frames = script.getAttribute("frames");
+      const messageRecording = script.getAttribute("messageRecording");
+      const removeUnusedResources = script.getAttribute("removeUnusedResources");
+      const download = script.getAttribute("download");
+      webgpuRecorderConfig = {
+        "frames": frames || 1,
+        "export": filename,
+        "removeUnusedResources": !!removeUnusedResources,
+        "messageRecording": !!messageRecording,
+        "download": download === null ? true : download === "false" ? false : download === "true" ? true : download
+      }
+    }
+  }
+
+  if (!webgpuRecorderConfig && self._webgpu_recorder_init) {
+    webgpuRecorderConfig = self._webgpu_recorder_init;
+  }
+
+  if (webgpuRecorderConfig) {
+    __webgpuRecorder = new WebGPURecorder(webgpuRecorderConfig);
+  }
+})();
