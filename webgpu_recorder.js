@@ -1421,7 +1421,7 @@ Worker = new Proxy(Worker, {
       src = src.replaceAll(`<%=webgpuRecorderConfig%>`, JSON.stringify(webgpuRecorderConfig));
     }
 
-    if (args.length > 1 && args[1].type === 'module') {
+    if (args.length > 1 && args[1]?.type === 'module') {
       src += `import ${JSON.stringify(args[0])};`;
     } else {
       src += `importScripts(${JSON.stringify(args[0])});`;
