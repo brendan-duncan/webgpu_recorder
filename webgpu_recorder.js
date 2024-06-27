@@ -25,7 +25,8 @@ export class WebGPURecorder {
       canvasHeight: options.height || 600,
       removeUnusedResources: !!options.removeUnusedResources,
       messageRecording: !!options.messageRecording,
-      download: options.download ?? true
+      download: options.download ?? true,
+      singleFrame: options.singleFrame ?? false,
     };
 
     this._objectIndex = 1;
@@ -37,6 +38,7 @@ export class WebGPURecorder {
 
     this._initializeCommands = [];
     this._frameCommands = [];
+    this._frameDependencies = [];
     this._frameObjects = [];
     this._initializeObjects = [];
     this._currentFrameCommands = null;
@@ -150,6 +152,65 @@ export class WebGPURecorder {
     }
   }
 
+  _writeDependencyObject(object, created, frame) {
+    let s = "";
+    if (object.__dependencies) {
+      for (const dep of object.__dependencies) {
+        if (!created.has(dep) && dep.__creationFrame !== frame) {
+          s += this._writeDependencyObject(dep, created, frame);
+          created.add(dep);
+        }
+      }
+    }
+    if (!created.has(object) && object.__creationFrame !== frame) {
+      if (!this._frameVariables[frame].has(this._getObjectVariable(object))) {
+        s += "let ";
+      }
+      s += `${object.__creationCommand};\n`;
+      created.add(object);
+    }
+
+    if (object.__updates) {
+      for (const update of object.__updates) {
+        if (update.frame >= frame) {
+          continue;
+        }
+        const object = update.object
+        const method = update.method;
+        const args = update.args;
+        if (method === "__writeData") {
+          const offset = args[1][0] ?? 0;
+          const size = args[1][1] ?? -1;
+          const rangeSize = size === -1 ? "" : `, ${size}`;
+          const buffer = this._getObjectVariable(object);
+          const range = `${buffer}.getMappedRange(${offset}${rangeSize})`;
+          s += `new Uint8Array(${range}).set(D[${args[0]}]);\n`;
+        } else if (method === "writeTexture") {
+          s += `${this._getObjectVariable(object)}.${method}(${this._stringifyArgs("", args)});\n`;
+        } else {
+          s += `${this._getObjectVariable(object)}.${method}(${this._stringifyArgs(method, args)});\n`;
+        }
+      }
+    }
+
+    return s;
+  }
+
+  _getFrameDependencies(frame) {
+    const dependencies = this._frameDependencies[frame];
+    if (!dependencies) {
+      return "";
+    }
+    const created = new Set();
+    let s = "\n// -------------------------------------------------------------\n";
+    for (const object of dependencies) {
+      s += this._writeDependencyObject(object, created, frame);
+    }
+    s += "\n// -------------------------------------------------------------\n";
+
+    return s;
+  }
+
   generateOutput() {
     const unusedObjects = new Set();
     this._isRecording = false;
@@ -208,7 +269,9 @@ export class WebGPURecorder {
       ${this._getVariableDeclarations(-1)}
       ${this._initializeCommands.join("\n  ")}\n`;
 
-    for (let fi = 0, fl = this._frameCommands.length; fi < fl; ++fi) {
+    //for (let fi = 0, fl = this._frameCommands.length; fi < fl; ++fi) {
+    let fi = this._frameCommands.length - 1;
+    {
       if (this.config.removeUnusedResources) {
         this._removeUnusedCommands(this._frameObjects[fi], this._frameCommands[fi], unusedObjects, "");
         this._removeUnusedCommands(this.__frameObjects[fi], this._frameCommandObjects[fi], unusedObjects, null);
@@ -217,24 +280,29 @@ export class WebGPURecorder {
       s += `
       async function f${fi}() {
           ${this._getVariableDeclarations(fi)}
+          ${this._getFrameDependencies(fi)}
           ${this._frameCommands[fi].join("\n  ")}
       }\n`;
     }
 
     s += "    let frames=[";
-    for (let fi = 0, fl = this._frameCommands.length; fi < fl; ++fi) {
+    //for (let fi = 0, fl = this._frameCommands.length; fi < fl; ++fi) {
+    {
       s += `f${fi},`;
     }
     s += "];";
+
+    //const frameCount = this._frameCommands.length - 1;
+    const frameCount = 1;
 
     s += `
         let frame = 0;
         let lastFrame = -1;
         let t0 = performance.now();
         async function renderFrame() {
-            if (frame > ${this._frameCommands.length - 1}) return;
+            if (frame > ${frameCount}) return;
             requestAnimationFrame(renderFrame);
-            if (frame == lastFrame) return;
+            if (frame == lastFrame || !frames[frame]) return;
             lastFrame = frame;
             let t1 = performance.now();
             frameLabel.innerText = "F: " + (frame + 1) + "  T:" + (t1 - t0).toFixed(2);
@@ -483,7 +551,9 @@ export class WebGPURecorder {
     // so that they have their correct data for the unmap.
     if (method === "unmap") {
       if (object.__mappedRanges) {
-        for (const buffer of object.__mappedRanges) {
+        for (const bufferObj of object.__mappedRanges) {
+          const buffer = bufferObj.result;
+          const args = bufferObj.args;
           // Make a copy of the mappedRange buffer data as it is when unmap
           // is called.
           const cacheIndex = this._getDataCache(buffer, 0, buffer.byteLength, buffer);
@@ -491,6 +561,9 @@ export class WebGPURecorder {
           // at the time unmap is called.
           this._recordLine(`new Uint8Array(${this._getObjectVariable(buffer)}).set(D[${cacheIndex}]);`, object);
           this._recordCommand("", buffer, "__writeData", null, [cacheIndex], true);
+          object.__updates = object.__updates || [];
+          object.__updates.push({ object, method: "__writeData", args: [cacheIndex, args], frame: this._frameIndex });
+          object.__updates.push({ object, method: "unmap", args: [], frame: this._frameIndex });
         }
         delete object.__mappedRanges;
       }
@@ -546,6 +619,9 @@ export class WebGPURecorder {
         cacheIndex = this._getDataCache(bytes, 0, size, texture, false);
         this._recordLine(`${this._getObjectVariable(queue)}.writeTexture(${this._stringifyObject(method, args[1])}, D[${cacheIndex}], {bytesPerRow:${bytesPerRow}}, ${this._stringifyObject(method, copySize)});`, object);
         this._recordCommand(false, queue, "__writeTexture", null, [args[1], { __data: cacheIndex }, { bytesPerRow }, copySize], true);
+
+        texture.__updates = texture.__updates || [];
+        texture.__updates.push({ object: queue, method: "writeTexture", args: [args[1], { __data: cacheIndex }, { bytesPerRow }, copySize], frame: this._frameIndex });
       } catch (e) {
         console.error(e.message);
       }
@@ -572,14 +648,14 @@ export class WebGPURecorder {
       if (!object.__mappedRanges) {
         object.__mappedRanges = [];
       }
-      object.__mappedRanges.push(result);
+      object.__mappedRanges.push({args, result});
     } else if (method === "submit") {
       // just to give the file some structure
       this._recordLine("", null);
     }
   }
 
-  _stringifyObject(method, object, toJson) {
+  _stringifyObject(method, object, toJson, dependencies) {
     let s = "";
     let first = true;
     for (const key in object) {
@@ -642,6 +718,9 @@ export class WebGPURecorder {
         } else {
           s += this._getObjectVariable(value);
         }
+        if (dependencies) {
+          dependencies.add(value);
+        }
       } else if (value.__data !== undefined) {
         if (toJson) {
           s += `{ "__data": ${value.__data} }`;
@@ -649,9 +728,9 @@ export class WebGPURecorder {
           s += `D[${value.__data}]`;
         }
       } else if (value.constructor === Array) {
-        s += this._stringifyArray(value, toJson);
+        s += this._stringifyArray(value, toJson, dependencies);
       } else if (typeof (value) === "object") {
-        s += this._stringifyObject(method, value, toJson);
+        s += this._stringifyObject(method, value, toJson, dependencies);
       } else {
         s += `${value}`;
       }
@@ -660,9 +739,9 @@ export class WebGPURecorder {
     return s;
   }
 
-  _stringifyArray(a, toJson) {
+  _stringifyArray(a, toJson, dependencies) {
     let s = "[";
-    s += this._stringifyArgs("", a, toJson);
+    s += this._stringifyArgs("", a, toJson, dependencies);
     s += "]";
     return s;
   }
@@ -865,7 +944,7 @@ export class WebGPURecorder {
     return args;
   }
 
-  _stringifyArgs(method, args, toJson) {
+  _stringifyArgs(method, args, toJson, dependencies) {
     if (args.length === 0 || (args.length === 1 && args[0] === undefined)) {
       return "";
     }
@@ -892,10 +971,13 @@ export class WebGPURecorder {
         } else {
           argStrings.push(this._getObjectVariable(a));
         }
+        if (dependencies) {
+          dependencies.add(a);
+        }
       } else if (a.constructor === Array) {
-        argStrings.push(this._stringifyArray(a, toJson));
+        argStrings.push(this._stringifyArray(a, toJson, dependencies));
       } else if (typeof (a) === "object") {
-        argStrings.push(this._stringifyObject(method, a, toJson));
+        argStrings.push(this._stringifyObject(method, a, toJson, dependencies));
       } else if (typeof (a) === "string") {
         if (!toJson && method === "createShaderModule") {
           argStrings.push(`\`${a}\``);
@@ -917,6 +999,21 @@ export class WebGPURecorder {
       } else {
         this._currentFrameCommands.push(line);
         this._currentFrameObjects.push(object);
+      }
+    }
+  }
+
+  _gatherDependencies(obj, args) {
+    for (const a of args) {
+      if (a && a.__id !== undefined) {
+        obj.__dependencies = obj.__dependencies || new Set();
+        obj.__dependencies.add(a);
+      } else if (a && a.constructor === Array) {
+        this._gatherDependencies(obj, a);
+      } else if (a && typeof (a) === "object") {
+        for (const key in a) {
+          this._gatherDependencies(obj, [a[key]]);
+        }
       }
     }
   }
@@ -948,6 +1045,8 @@ export class WebGPURecorder {
       obj = result;
     } else if (method === "createView") {
       this._unusedTextureViews.set(result.__id, object.__id);
+      result.__dependencies = result.__dependencies || new Set();
+      result.__dependencies.add(object);
     } else if (method === "writeTexture") {
       obj = args[0].texture;
     } else if (method === "createBuffer") {
@@ -955,6 +1054,10 @@ export class WebGPURecorder {
       obj = result;
     } else if (method === "writeBuffer") {
       obj = args[0];
+    }
+
+    if (result) {
+      this._gatherDependencies(result, args);
     }
 
     const newArgs = `[${this._stringifyArgs(method, args, true)}]`;
@@ -977,10 +1080,25 @@ export class WebGPURecorder {
       this._recordLine("\n", null);
     }
 
+    if (method === "writeBuffer" || method === "writeTexture") {
+      obj.__updates = obj.__updates || [];
+      const frame = this._frameIndex;
+      obj.__updates.push({frame, object, method, args});
+    }
+
+    if (this._frameDependencies[this._frameIndex] === undefined) {
+      this._frameDependencies[this._frameIndex] = new Set();
+    }
+
+    const dependencies = this._frameDependencies[this._frameIndex];
+
     if (result) {
-      this._recordLine(`${this._getObjectVariable(result)} = ${async}${this._getObjectVariable(object)}.${method}(${this._stringifyArgs(method, args)});`, obj);
+      const cmd = `${this._getObjectVariable(result)} = ${async}${this._getObjectVariable(object)}.${method}(${this._stringifyArgs(method, args, false, dependencies)});`;
+      result.__creationCommand = cmd;
+      result.__creationFrame = this._frameIndex;
+      this._recordLine(cmd, obj);
     } else {
-      this._recordLine(`${async}${this._getObjectVariable(object)}.${method}(${this._stringifyArgs(method, args)});`, obj);
+      this._recordLine(`${async}${this._getObjectVariable(object)}.${method}(${this._stringifyArgs(method, args, false, dependencies)});`, obj);
     }
 
     // Add a blank line after ending render and compute passes to make them easier
@@ -1133,30 +1251,6 @@ WebGPURecorder._formatInfo = {
   "astc-12x12-unorm": { "blockWidth": 12, "blockHeight": 12, "bytesPerBlock": 16 },
   "astc-12x12-unorm-srgb": { "blockWidth": 12, "blockHeight": 12, "bytesPerBlock": 16 },
 };
-
-const GPUObjectTypes = new Set([
-  GPUAdapter,
-  GPUDevice,
-  GPUBuffer,
-  GPUTexture,
-  GPUTextureView,
-  GPUExternalTexture,
-  GPUSampler,
-  GPUBindGroupLayout,
-  GPUBindGroup,
-  GPUPipelineLayout,
-  GPUShaderModule,
-  GPUComputePipeline,
-  GPURenderPipeline,
-  GPUCommandBuffer,
-  GPUCommandEncoder,
-  GPUComputePassEncoder,
-  GPURenderPassEncoder,
-  GPURenderBundle,
-  GPUQueue,
-  GPUQuerySet,
-  GPUCanvasContext
-]);
 
 class GPUObjectWrapper {
   constructor(idGenerator) {
@@ -1516,13 +1610,15 @@ export let __webgpuRecorder = null;
       const messageRecording = script.getAttribute("messageRecording");
       const removeUnusedResources = script.getAttribute("removeUnusedResources");
       const download = script.getAttribute("download");
+      const singleFrame = script.getAttribute("singleFrame");
       webgpuRecorderConfig = {
         "frames": frames || 1,
         "export": filename,
         "removeUnusedResources": !!removeUnusedResources,
         "messageRecording": !!messageRecording,
-        "download": download === null ? true : download === "false" ? false : download === "true" ? true : download
-      }
+        "download": download === null ? true : download === "false" ? false : download === "true" ? true : download,
+        "singleFrame": singleFrame === null ? false : singleFrame === "false" ? false : singleFrame === "true" ? true : singleFrame
+      };
     }
   }
 
