@@ -185,8 +185,8 @@ export class WebGPURecorder {
           const buffer = this._getObjectVariable(object);
           const range = `${buffer}.getMappedRange(${offset}${rangeSize})`;
           s += `new Uint8Array(${range}).set(D[${args[0]}]);\n`;
-        } else if (method === "writeTexture") {
-          s += `${this._getObjectVariable(object)}.${method}(${this._stringifyArgs("", args)});\n`;
+        } else if (args?.constructor === String) {
+          s += `${this._getObjectVariable(object)}.${method}(${args});\n`;
         } else {
           s += `${this._getObjectVariable(object)}.${method}(${this._stringifyArgs(method, args)});\n`;
         }
@@ -621,7 +621,8 @@ export class WebGPURecorder {
         this._recordCommand(false, queue, "__writeTexture", null, [args[1], { __data: cacheIndex }, { bytesPerRow }, copySize], true);
 
         texture.__updates = texture.__updates || [];
-        texture.__updates.push({ object: queue, method: "writeTexture", args: [args[1], { __data: cacheIndex }, { bytesPerRow }, copySize], frame: this._frameIndex });
+        const _copySize = JSON.parse(JSON.stringify(copySize));
+        texture.__updates.push({ object: queue, method: "writeTexture", args: [args[1], { __data: cacheIndex }, { bytesPerRow }, _copySize], frame: this._frameIndex });
       } catch (e) {
         console.error(e.message);
       }
@@ -945,11 +946,19 @@ export class WebGPURecorder {
   }
 
   _stringifyArgs(method, args, toJson, dependencies) {
+    if (args === undefined || args === null) {
+      return "";
+    }
     if (args.length === 0 || (args.length === 1 && args[0] === undefined)) {
       return "";
     }
 
-    args = this._processArgs(method, args);
+    try {
+      args = this._processArgs(method, args);
+    } catch (e) {
+      console.log(`!!!! ${method} ${args}`);
+      console.log(e);
+    }
 
     const argStrings = [];
     for (const a of args) {
@@ -1018,6 +1027,80 @@ export class WebGPURecorder {
     }
   }
 
+  _objMatch(a, b) {
+    for (const key in a) {
+      if (key.startsWith("__")) {
+        continue
+      }
+      const ai = a[key];
+      const bi = b[key];
+      if (ai?.constructor !== bi?.constructor) {
+        return false;
+      }
+      if (ai === bi) {
+        continue;
+      }
+      if (!ai || !bi) {
+        return false;
+      }
+      if (ai?.constructor === Array) {
+        if (!this._argsMatch(ai, bi)) {
+          return false;
+        }
+      } else if (typeof ai.buffer?.constructor === ArrayBuffer) {
+        if (ai.byteLength !== bi.byteLength) {
+          return false;
+        }
+      } else if (typeof ai === "object") {
+        if (!this._objMatch(ai, bi)) {
+          return false;
+        }
+      } else if (ai !== bi) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  _argsMatch(a, b) {
+    if (a.length !== b.length) {
+      return false;
+    }
+    for (let i = 0; i < a.length; ++i) {
+      let ai = a[i];
+      let bi = b[i];
+      if (ai === bi) {
+        continue;
+      }
+      if (!ai || !bi) {
+        return false;
+      }
+      if (ai?.constructor !== bi?.constructor) {
+        return false;
+      }
+      if (typeof ai !== typeof bi) {
+        return false;
+      }
+      
+      if (ai?.constructor === Array) {
+        if (!this._argsMatch(ai, bi)) {
+          return false;
+        }
+      } else if (typeof ai.buffer?.constructor === ArrayBuffer) {
+        if (ai.byteLength !== bi.byteLength) {
+          return false;
+        }
+      } else if (typeof ai === "object") {
+        if (!this._objMatch(ai, bi)) {
+          return false;
+        }
+      } else if (ai !== bi) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   _recordCommand(async, object, method, result, args, skipLine) {
     if (!this._isRecording) {
       return;
@@ -1080,25 +1163,39 @@ export class WebGPURecorder {
       this._recordLine("\n", null);
     }
 
-    if (method === "writeBuffer" || method === "writeTexture") {
-      obj.__updates = obj.__updates || [];
-      const frame = this._frameIndex;
-      obj.__updates.push({frame, object, method, args});
-    }
-
     if (this._frameDependencies[this._frameIndex] === undefined) {
       this._frameDependencies[this._frameIndex] = new Set();
     }
-
     const dependencies = this._frameDependencies[this._frameIndex];
+    const argStr = this._stringifyArgs(method, args, false, dependencies);
+
+    if (method === "writeBuffer" || method === "writeTexture") {
+      const frame = this._frameIndex;
+
+      if (frame < this.config.maxFrameCount) {
+        obj.__updates = obj.__updates || [];
+        let found = false;
+        for (let i = 0; i < obj.__updates.length; ++i) {
+          if (obj.__updates[i].method === method) {
+            if (method === "writeBuffer" && obj.__updates[i].args === argStr) {
+              found = true;
+              break;
+            }
+          }
+        }
+        if (!found) {
+          obj.__updates.push({frame, object, method, args: argStr});
+        }
+      }
+    }
 
     if (result) {
-      const cmd = `${this._getObjectVariable(result)} = ${async}${this._getObjectVariable(object)}.${method}(${this._stringifyArgs(method, args, false, dependencies)});`;
+      const cmd = `${this._getObjectVariable(result)} = ${async}${this._getObjectVariable(object)}.${method}(${argStr});`;
       result.__creationCommand = cmd;
       result.__creationFrame = this._frameIndex;
       this._recordLine(cmd, obj);
     } else {
-      this._recordLine(`${async}${this._getObjectVariable(object)}.${method}(${this._stringifyArgs(method, args, false, dependencies)});`, obj);
+      this._recordLine(`${async}${this._getObjectVariable(object)}.${method}(${argStr});`, obj);
     }
 
     // Add a blank line after ending render and compute passes to make them easier
