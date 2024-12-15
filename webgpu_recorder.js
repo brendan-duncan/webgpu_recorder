@@ -258,6 +258,14 @@ export class WebGPURecorder {
     }
     
     async function B64ToA(s, type, length) {
+        if (Uint8Array.fromBase64) {
+            const s2 = s.substr(s.indexOf(",") + 1);
+            const b = Uint8Array.fromBase64(s2);
+            if (type == "Uint32Array") {
+              return new Uint32Array(b.buffer);
+            }
+            return b;
+        }
         const res = await fetch(s);
         const x = new Uint8Array(await res.arrayBuffer());
         if (type == "Uint32Array") {
