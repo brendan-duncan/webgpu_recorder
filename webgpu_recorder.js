@@ -640,7 +640,8 @@ export class WebGPURecorder {
         s += "null";
       } else if (typeof (value) === "string") {
         if (!toJson && method === "createShaderModule") {
-          s += `\`${value}\``;
+          const escaped = value.replaceAll('`', '\\`');
+          s += `\`${escaped}\``;
         } else {
           s += JSON.stringify(value);
         }

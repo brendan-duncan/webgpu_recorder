@@ -68,6 +68,7 @@ struct VertexOutput {
 @vertex
 fn main(@location(0) position : vec4<f32>,
         @location(1) uv : vec2<f32>) -> VertexOutput {
+    // test shader with \`
     var output : VertexOutput;
     output.Position = uniforms.modelViewProjectionMatrix * position;
     output.fragUV = uv;
