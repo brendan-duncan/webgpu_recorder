@@ -1407,11 +1407,21 @@ Worker = new Proxy(Worker, {
     // Inject inspector before the worker loads
     let src = self.__webgpu_src ? `self.__webgpu_src = ${self.__webgpu_src.toString()};self.__webgpu_src();` : "";
 
-    const url = args[0];
-    const _url = new _URL(url);
-    _webgpuHostAddress = `${_url.protocol}//${_url.host}`;
+    let url = args[0];
+
+    let _url = null;
+    try {
+      _url = new _URL(url);
+    } catch {
+      const baseUrl = new _URL(import.meta.url);
+      const baseDir = baseUrl.pathname.substring(0, baseUrl.pathname.lastIndexOf("/"));
+      const sep = url.startsWith("/") ? "" : "/";
+      _url = new URL(`${baseUrl.protocol}//${baseUrl.host}${baseDir}${sep}${url}`);
+    }
+
+    const _webgpuHostAddress = `${_url.protocol}//${_url.host}`;
     const baseDir = _url.pathname.substring(0, _url.pathname.lastIndexOf("/"));
-    _webgpuBaseAddress = `${_webgpuHostAddress}${baseDir}`;
+    const _webgpuBaseAddress = `${_webgpuHostAddress}${baseDir}`;
 
     src = src.replaceAll(`<%=_webgpuHostAddress%>`, `${_webgpuHostAddress}`);
     src = src.replaceAll(`<%=_webgpuBaseAddress%>`, `${_webgpuBaseAddress}`);
