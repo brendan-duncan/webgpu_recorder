@@ -249,14 +249,14 @@ export class WebGPURecorder {
         }
         requestAnimationFrame(renderFrame);
     }
-    
+
     function setCanvasSize(canvas, width, height) {
         if (canvas.width !== width || canvas.height !== height) {
             canvas.width = width;
             canvas.height = height;
         }
     }
-    
+
     async function B64ToA(s, type, length) {
         if (Uint8Array.fromBase64) {
             const s2 = s.substr(s.indexOf(",") + 1);
@@ -1403,7 +1403,7 @@ Request = new Proxy(Request, {
 Worker = new Proxy(Worker, {
   construct(target, args, newTarget) {
     // Inject inspector before the worker loads
-    let src = `self.__webgpu_src = ${self.__webgpu_src.toString()};self.__webgpu_src();`;
+    let src = self.__webgpu_src ? `self.__webgpu_src = ${self.__webgpu_src.toString()};self.__webgpu_src();` : "";
 
     const url = args[0];
     const _url = new _URL(url);
