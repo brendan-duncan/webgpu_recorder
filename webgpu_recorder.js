@@ -1421,7 +1421,9 @@ Worker = new Proxy(Worker, {
 
     const _webgpuHostAddress = `${_url.protocol}//${_url.host}`;
     const baseDir = _url.pathname.substring(0, _url.pathname.lastIndexOf("/"));
+    const fileName = _url.pathname.substring(_url.pathname.lastIndexOf("/")+1);
     const _webgpuBaseAddress = `${_webgpuHostAddress}${baseDir}`;
+    const filePath = `${_webgpuBaseAddress}/${fileName}`;
 
     src = src.replaceAll(`<%=_webgpuHostAddress%>`, `${_webgpuHostAddress}`);
     src = src.replaceAll(`<%=_webgpuBaseAddress%>`, `${_webgpuBaseAddress}`);
@@ -1443,9 +1445,9 @@ Worker = new Proxy(Worker, {
     }
 
     if (args.length > 1 && args[1]?.type === 'module') {
-      src += `import ${JSON.stringify(args[0])};`;
+      src += `import ${JSON.stringify(filePath)};`;
     } else {
-      src += `importScripts(${JSON.stringify(args[0])});`;
+      src += `importScripts(${JSON.stringify(filePath)});`;
     }
 
     let blob = new Blob([src]);
