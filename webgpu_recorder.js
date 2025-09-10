@@ -794,6 +794,9 @@ export class WebGPURecorder {
       const cacheIndex = this._getDataCache(new Uint8Array(buffer.buffer || buffer, buffer.byteOffset, buffer.byteLength), offset, size, texture);
       args[1] = { __data: cacheIndex };
       args[2] = { offset: 0, bytesPerRow: args[2].bytesPerRow, rowsPerImage: args[2].rowsPerImage };
+      if (args[3].buffer instanceof ArrayBuffer) {
+        args[3] = [...args[3]];
+      }
     } else if (method === "setBindGroup") {
       if (args.length === 5) {
         const buffer = args[2];

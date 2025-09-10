@@ -135,7 +135,7 @@ async function main() {
         format: "rgba8unorm",
         usage: GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING
     });
-    device.queue.writeTexture({ texture }, textureData.buffer, { offset: 0, bytesPerRow: textureWidth*4 }, { width: textureWidth, height: textureHeight });
+    device.queue.writeTexture({ texture }, textureData.buffer, { offset: 0, bytesPerRow: textureWidth*4 }, new Uint32Array([textureWidth, textureHeight]));
 
     const sampler = device.createSampler();
 
