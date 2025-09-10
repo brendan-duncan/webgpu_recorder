@@ -794,9 +794,6 @@ export class WebGPURecorder {
       const cacheIndex = this._getDataCache(new Uint8Array(buffer.buffer || buffer, buffer.byteOffset, buffer.byteLength), offset, size, texture);
       args[1] = { __data: cacheIndex };
       args[2] = { offset: 0, bytesPerRow: args[2].bytesPerRow, rowsPerImage: args[2].rowsPerImage };
-      if (args[3].buffer instanceof ArrayBuffer) {
-        args[3] = [...args[3]];
-      }
     } else if (method === "setBindGroup") {
       if (args.length === 5) {
         const buffer = args[2];
@@ -904,6 +901,8 @@ export class WebGPURecorder {
         } else {
           argStrings.push(this._getObjectVariable(a));
         }
+      } else if (a.buffer instanceof ArrayBuffer) {
+        argStrings.push(this._stringifyArray([...a], toJson));
       } else if (a.constructor === Array) {
         argStrings.push(this._stringifyArray(a, toJson));
       } else if (typeof (a) === "object") {
