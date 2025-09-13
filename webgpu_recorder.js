@@ -317,15 +317,23 @@ export class WebGPURecorder {
         }
         requestAnimationFrame(renderFrame);
     }
-    
+
     function setCanvasSize(canvas, width, height) {
         if (canvas.width !== width || canvas.height !== height) {
             canvas.width = width;
             canvas.height = height;
         }
     }
-    
+
     async function B64ToA(s, type, length) {
+        if (Uint8Array.fromBase64) {
+            const s2 = s.substr(s.indexOf(",") + 1);
+            const b = Uint8Array.fromBase64(s2);
+            if (type == "Uint32Array") {
+              return new Uint32Array(b.buffer);
+            }
+            return b;
+        }
         const res = await fetch(s);
         const x = new Uint8Array(await res.arrayBuffer());
         if (type == "Uint32Array") {
@@ -709,7 +717,8 @@ export class WebGPURecorder {
         s += "null";
       } else if (typeof (value) === "string") {
         if (!toJson && method === "createShaderModule") {
-          s += `\`${value}\``;
+          const escaped = value.replaceAll('`', '\\`');
+          s += `\`${escaped}\``;
         } else {
           s += JSON.stringify(value);
         }
@@ -983,6 +992,8 @@ export class WebGPURecorder {
         if (dependencies) {
           dependencies.add(a);
         }
+      } else if (a.buffer instanceof ArrayBuffer) {
+        argStrings.push(this._stringifyArray([...a], toJson));
       } else if (a.constructor === Array) {
         argStrings.push(this._stringifyArray(a, toJson, dependencies));
       } else if (typeof (a) === "object") {
@@ -1585,13 +1596,25 @@ Request = new Proxy(Request, {
 Worker = new Proxy(Worker, {
   construct(target, args, newTarget) {
     // Inject inspector before the worker loads
-    let src = `self.__webgpu_src = ${self.__webgpu_src.toString()};self.__webgpu_src();`;
+    let src = self.__webgpu_src ? `self.__webgpu_src = ${self.__webgpu_src.toString()};self.__webgpu_src();` : "";
 
-    const url = args[0];
-    const _url = new _URL(url);
-    _webgpuHostAddress = `${_url.protocol}//${_url.host}`;
+    let url = args[0];
+
+    let _url = null;
+    try {
+      _url = new _URL(url);
+    } catch {
+      const baseUrl = new _URL(import.meta.url);
+      const baseDir = baseUrl.pathname.substring(0, baseUrl.pathname.lastIndexOf("/"));
+      const sep = url.startsWith("/") ? "" : "/";
+      _url = new URL(`${baseUrl.protocol}//${baseUrl.host}${baseDir}${sep}${url}`);
+    }
+
+    const _webgpuHostAddress = `${_url.protocol}//${_url.host}`;
     const baseDir = _url.pathname.substring(0, _url.pathname.lastIndexOf("/"));
-    _webgpuBaseAddress = `${_webgpuHostAddress}${baseDir}`;
+    const fileName = _url.pathname.substring(_url.pathname.lastIndexOf("/")+1);
+    const _webgpuBaseAddress = `${_webgpuHostAddress}${baseDir}`;
+    const filePath = `${_webgpuBaseAddress}/${fileName}`;
 
     src = src.replaceAll(`<%=_webgpuHostAddress%>`, `${_webgpuHostAddress}`);
     src = src.replaceAll(`<%=_webgpuBaseAddress%>`, `${_webgpuBaseAddress}`);
@@ -1613,9 +1636,9 @@ Worker = new Proxy(Worker, {
     }
 
     if (args.length > 1 && args[1]?.type === 'module') {
-      src += `import ${JSON.stringify(args[0])};`;
+      src += `import ${JSON.stringify(filePath)};`;
     } else {
-      src += `importScripts(${JSON.stringify(args[0])});`;
+      src += `importScripts(${JSON.stringify(filePath)});`;
     }
 
     let blob = new Blob([src]);

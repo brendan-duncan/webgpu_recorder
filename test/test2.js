@@ -68,6 +68,7 @@ struct VertexOutput {
 @vertex
 fn main(@location(0) position : vec4<f32>,
         @location(1) uv : vec2<f32>) -> VertexOutput {
+    // test shader with \`
     var output : VertexOutput;
     output.Position = uniforms.modelViewProjectionMatrix * position;
     output.fragUV = uv;
@@ -134,7 +135,7 @@ async function main() {
         format: "rgba8unorm",
         usage: GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING
     });
-    device.queue.writeTexture({ texture }, textureData.buffer, { offset: 0, bytesPerRow: textureWidth*4 }, { width: textureWidth, height: textureHeight });
+    device.queue.writeTexture({ texture }, textureData.buffer, { offset: 0, bytesPerRow: textureWidth*4 }, new Uint32Array([textureWidth, textureHeight]));
 
     const sampler = device.createSampler();
 
