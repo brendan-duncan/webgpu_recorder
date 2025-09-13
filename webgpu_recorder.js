@@ -269,7 +269,6 @@ export class WebGPURecorder {
       ${this._getVariableDeclarations(-1)}
       ${this._initializeCommands.join("\n  ")}\n`;
 
-    //for (let fi = 0, fl = this._frameCommands.length; fi < fl; ++fi) {
     let fi = this._frameCommands.length - 1;
     {
       if (this.config.removeUnusedResources) {
@@ -285,12 +284,7 @@ export class WebGPURecorder {
       }\n`;
     }
 
-    s += "    let frames=[";
-    //for (let fi = 0, fl = this._frameCommands.length; fi < fl; ++fi) {
-    {
-      s += `f${fi},`;
-    }
-    s += "];";
+    s += `    const frames=[f${fi}];`;
 
     //const frameCount = this._frameCommands.length - 1;
     const frameCount = 1;
