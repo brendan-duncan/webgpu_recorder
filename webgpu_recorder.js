@@ -562,9 +562,12 @@ export class WebGPURecorder {
       const promise = new Promise((resolve) => {
         self._gpuWrapper.skipRecord++;
         buffer.mapAsync(GPUMapMode.READ).then(() => {
+          self._gpuWrapper.skipRecord++;
           const range = buffer.getMappedRange();
           const bufferData = new Uint8Array(range);
           self._replaceDataCache(cacheIndex, bufferData, 0, bufferData.length);
+          buffer.unmap();
+          self._gpuWrapper.skipRecord--;
           resolve();
         });
         this._gpuWrapper.skipRecord--;
