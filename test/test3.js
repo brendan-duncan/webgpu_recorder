@@ -69,7 +69,7 @@ async function main() {
         context.getCurrentTexture().createView();
 
     // make a command encoder to start encoding commands
-    const encoder = device.createCommandEncoder({ label: 'our encoder' });
+    const encoder = device.createCommandEncoder({ label: 'encoder' });
 
     // make a render pass encoder to encode render specific commands
     const pass = encoder.beginRenderPass(renderPassDescriptor);

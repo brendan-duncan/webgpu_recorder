@@ -25,7 +25,8 @@ export class WebGPURecorder {
       canvasHeight: options.height || 600,
       removeUnusedResources: !!options.removeUnusedResources,
       messageRecording: !!options.messageRecording,
-      download: options.download ?? true
+      download: options.download ?? true,
+      singleFrame: options.singleFrame ?? false,
     };
 
     this._objectIndex = 1;
@@ -34,6 +35,8 @@ export class WebGPURecorder {
     this._initializeCommandObjects = [];
     this._frameCommandObjects = [];
     this._currentFrameCommandObjects = null;
+    this._frameCommandDependencies = [];
+    this._currentFrameCommandDependencies = null;
 
     this._initializeCommands = [];
     this._frameCommands = [];
@@ -129,6 +132,9 @@ export class WebGPURecorder {
 
     this._currentFrameCommandObjects = [];
     this._frameCommandObjects.push(this._currentFrameCommandObjects);
+
+    this._currentFrameCommandDependencies = [];
+    this._frameCommandDependencies.push(this._currentFrameCommandDependencies);
   }
 
   _frameEnd() {
@@ -196,55 +202,131 @@ export class WebGPURecorder {
         <body style="text-align: center;">
             <canvas id="#webgpu" width=${this.config.canvasWidth} height=${this.config.canvasHeight}></canvas>
             <script>
-    let D = new Array(${this._arrayCache.length});
+    const D = new Array(${this._arrayCache.length});
     async function main() {
       await loadData();
 
-      let canvas = document.getElementById("#webgpu");
+      const canvas = document.getElementById("#webgpu");
       let context = canvas.getContext("webgpu");
-      let frameLabel = document.createElement("div");
+      const frameLabel = document.createElement("div");
       frameLabel.style = "position: absolute; top: 10px; left: 10px; font-size: 24pt; color: #f00;";
       document.body.append(frameLabel);
       ${this._getVariableDeclarations(-1)}
       ${this._initializeCommands.join("\n  ")}\n`;
 
-    for (let fi = 0, fl = this._frameCommands.length; fi < fl; ++fi) {
-      if (this.config.removeUnusedResources) {
+    const lastFrame = Math.max(this._frameCommands.length - 1, 0);
+    const singleFrame = this.config.singleFrame;
+
+    if (this.config.removeUnusedResources) {
+      for (let fi = 0, fl = this._frameCommands.length; fi < fl; ++fi) {
         this._removeUnusedCommands(this._frameObjects[fi], this._frameCommands[fi], unusedObjects, "");
         this._removeUnusedCommands(this.__frameObjects[fi], this._frameCommandObjects[fi], unusedObjects, null);
         this._frameCommands[fi] = this._frameCommands[fi].filter((cmd) => !!cmd);
       }
-      s += `
-      async function f${fi}() {
-          ${this._getVariableDeclarations(fi)}
-          ${this._frameCommands[fi].join("\n  ")}
-      }\n`;
     }
 
-    s += "    let frames=[";
-    for (let fi = 0, fl = this._frameCommands.length; fi < fl; ++fi) {
-      s += `f${fi},`;
+    if (singleFrame) {
+      const commandDependencies = this._frameCommandDependencies[lastFrame];
+      const numCommands = commandDependencies.length;
+
+      const creationCommands = [];
+      const bufferCreations = [];
+      const textureCreations = [];
+
+      function collectDependencies(self, cmd, lastFrame) {
+        for (const objName of cmd) {
+          let found = false;
+          for (let frame = lastFrame; !found && frame >= 0; --frame) {
+            const commandObjects = self._frameCommandObjects[frame];
+            const frameCommands = self._frameCommands[frame].filter((c) => !!c && c !== "\n");
+            for (let j = 0; j < commandObjects.length; ++j) {
+              const cmdObjects = commandObjects[j];
+              if (cmdObjects.result === objName) {
+                const frameCmd = frameCommands[j];
+                const isBufferCreate = frameCmd.indexOf("createBuffer(") !== -1;
+                if (isBufferCreate) {
+                  bufferCreations.push([objName, frame]);
+                }
+                if (frameCmd.indexOf('"mappedAtCreation":true') !== -1) {
+                  creationCommands.unshift(frameCommands[j + 3]); // unmap
+                  creationCommands.unshift(frameCommands[j + 2]); // array set data
+                  creationCommands.unshift(frameCommands[j + 1]); // getMappedRange
+                } else if (frameCmd.indexOf('createTexture(') !== -1) {
+                  textureCreations.push([objName, frame]);
+                  const nextCmd = frameCommands[j + 1];
+                  if (nextCmd.indexOf('writeTexture(') !== -1) {
+                    creationCommands.unshift(nextCmd); // writeTexture
+                  }
+                }
+                creationCommands.unshift(frameCmd);
+                found = true;
+                //console.log("collecting", objName, "from frame", frame);
+                const newCommandDeps = self._frameCommandDependencies[frame][j];
+                collectDependencies(self, newCommandDeps, frame);
+                break;
+              }
+            }
+          }
+        }
+      }
+
+      for (let i = 0; i < numCommands; ++i) {
+        const cmd = commandDependencies[i];
+        collectDependencies(this, cmd, lastFrame - 1);
+      }
+
+      s += "\n  // Creation commands for objects used in the last frame\n";
+      s += creationCommands.join("\n");
+
+      s += "\n\n  // Buffer creations for mapped buffers used in the last frame\n";
+      for (const [buffer, frame] of bufferCreations) {
+        let found = false;
+        for (let fi = lastFrame - 1; !found && fi >= frame; --fi) {
+          const frameCommands = this._frameCommands[fi];
+          for (let ci = frameCommands.length - 1; ci >= 0; --ci) {
+            const cmd = frameCommands[ci];
+            if (cmd.indexOf(`.writeBuffer(${buffer}`) !== -1) {
+              s += `${cmd}\n`;
+              found = true;
+              break;
+            }
+          }
+        }
+      }
+
+      s += "\n\n\n  // Last frame commands";
     }
-    s += "];";
+
+    for (let fi = 0, fl = this._frameCommands.length; fi < fl; ++fi) {
+      if (!singleFrame || fi === lastFrame) {
+        s += `
+        async function f${fi}() {
+            ${this._getVariableDeclarations(fi)}
+            ${this._frameCommands[fi].join("\n  ")}
+        }\n`;
+      }
+    }
+
+    if (singleFrame) {
+      s += `    const frames=[f${lastFrame}];\n`;
+    } else {
+      s += "    const frames=[];";
+      for (let fi = 0, fl = this._frameCommands.length; fi < fl; ++fi) {
+        s += `frames.push(f${fi});`;
+      }
+    }
 
     s += `
         let frame = 0;
-        let lastFrame = -1;
         let t0 = performance.now();
+        const frameCount = frames.length;
         async function renderFrame() {
-            if (frame > ${this._frameCommands.length - 1}) return;
+            if (frame >= frameCount) return;
             requestAnimationFrame(renderFrame);
-            if (frame == lastFrame) return;
-            lastFrame = frame;
-            let t1 = performance.now();
-            frameLabel.innerText = "F: " + (frame + 1) + "  T:" + (t1 - t0).toFixed(2);
+            const t1 = performance.now();
+            frameLabel.innerText = "F: " + frame + "  T:" + (t1 - t0).toFixed(2);
             t0 = t1;
-            try {
-                await frames[frame]();
-            } catch (err) {
-                console.log("Error Frame:", frame);
-                console.error(err.message);
-            }
+            await frames[frame]();
             frame++;
         }
         requestAnimationFrame(renderFrame);
@@ -935,6 +1017,39 @@ export class WebGPURecorder {
     }
   }
 
+  _getArrayDependencies(array, dependencies) {
+    for (const value of array) {
+      if (!value) {
+          continue;
+      } else if (value instanceof ArrayBuffer || value?.buffer instanceof ArrayBuffer) {
+        continue;
+      } else if (value && value.__id) {
+        dependencies.push(this._getObjectVariable(value));
+      } else if (value instanceof Array) {
+        this._getArrayDependencies(value, dependencies);
+      } else if (value instanceof Object) {
+        this._getObjectDependencies(value, dependencies);
+      }
+    }
+  }
+
+  _getObjectDependencies(object, dependencies) {
+    for (const key in object) {
+      const value = object[key];
+      if (!value) {
+          continue;
+      } else if (value instanceof ArrayBuffer || value?.buffer instanceof ArrayBuffer) {
+        continue;
+      } else if (value && value.__id) {
+        dependencies.push(this._getObjectVariable(value));
+      } else if (value instanceof Array) {
+        this._getArrayDependencies(value, dependencies);
+      } else if (value instanceof Object) {
+        this._getObjectDependencies(value, dependencies);
+      }
+    }
+  }
+
   _recordCommand(async, object, method, result, args, skipLine) {
     if (!this._isRecording) {
       return;
@@ -969,6 +1084,29 @@ export class WebGPURecorder {
       obj = result;
     } else if (method === "writeBuffer") {
       obj = args[0];
+    }
+
+    if (this._currentFrameCommandDependencies) {
+      const resultObj = this._getObjectVariable(result);
+      if (resultObj === "xBindGroup151") {
+        console.log("here");
+      }
+      const commandDependencies = [this._getObjectVariable(object)];
+      for (const arg of args) {
+        if (!arg) {
+          continue;
+        } else if (arg instanceof ArrayBuffer || arg?.buffer instanceof ArrayBuffer) {
+          continue;
+        } else if (arg && arg.__id) {
+          commandDependencies.push(this._getObjectVariable(arg));
+        } else if (arg instanceof Array) {
+          this._getArrayDependencies(arg, commandDependencies);
+        } else if (arg instanceof Object) {
+          this._getObjectDependencies(arg, commandDependencies);
+        }
+      }
+
+      this._currentFrameCommandDependencies.push(commandDependencies);
     }
 
     const newArgs = `[${this._stringifyArgs(method, args, true)}]`;

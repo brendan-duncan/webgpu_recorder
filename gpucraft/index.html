@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>GPUCraft</title>
+    <link rel="stylesheet" type="text/css" href="style.css" />
+  </head>
+  <body>
+    <!--
+            Experiments with WebGPU, port of the wonderful Minecraft clone
+            tutorials from B3agz, https://github.com/b3agz/Code-A-Game-Like-Minecraft-In-Unity.
+        -->
+    <script type="module">
+      import {WebGPURecorder} from "../webgpu_recorder.js";
+            new WebGPURecorder({
+                "frames": 10,
+                "export": "gpucraft",
+                "width": 800,
+                "height": 600,
+                "singleFrame": true
+            });
+    </script>
+    <canvas id="gpucraft"></canvas>
+    <script type="module" src="js/gpucraft.js"></script>
+  </body>
+</html>
