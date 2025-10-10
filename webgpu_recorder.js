@@ -23,7 +23,8 @@ export class WebGPURecorder {
       canvasHeight: options.height || 600,
       removeUnusedResources: !!options.removeUnusedResources,
       messageRecording: !!options.messageRecording,
-      download: options.download ?? true
+      download: options.download ?? true,
+      compactCommands: !!options.compactCommands
     };
 
     this._objectIndex = 1;
@@ -174,6 +175,80 @@ export class WebGPURecorder {
     return s;
   }
 
+  _reorderFrameCommands(frameIndex) {
+    const frameCommands = this._frameCommands[frameIndex].filter((cmd) => cmd && cmd !== "\n");
+    const cmdObjects = this._frameCommandObjects[frameIndex];
+    const numCommands = frameCommands.length;
+
+    function _addCommandEncoderCommands(i, obj, cmds) {
+      for (let j = i, l = numCommands; j < l; j++) {
+        const cmd = frameCommands[j];
+        const cmdObj = cmdObjects[j];
+        if (cmdObj?.object === obj) {
+          cmds.push(cmd);
+          if (cmdObj?.result) {
+            _addCommandEncoderCommands(j + 1, cmdObj.result, cmds);
+          }
+        }
+      }
+    }
+
+    let queue = null;
+    for (let i = 0; i < numCommands; i++) {
+      const cmd = frameCommands[i];
+      if (cmd.indexOf(".submit(") !== -1) {
+        queue = cmdObjects[i].object;
+        break;
+      }
+    }
+    if (!queue) {
+      queue = "xQueue7"; // Fallback to the first queue object.
+    }
+
+    const commandEncoders = [];
+    for (let i = 0; i < numCommands; i++) {
+      const cmd = frameCommands[i];
+      if (cmd.indexOf("createCommandEncoder") !== -1) {
+        const encoder = cmdObjects[i].result;
+        let cmds = [cmd];
+        commandEncoders.push({cmd, encoder, commands: cmds});
+        _addCommandEncoderCommands(i + 1, encoder, cmds);
+
+        for (const cmd2 of cmds) {
+          if (cmd2.indexOf(".finish()") !== -1) {
+            for (let j = 0; j < numCommands; j++) {
+              if (cmd2 === frameCommands[j]) {
+                const result = cmdObjects[j]?.result;
+                cmds.push(`${queue}.submit([${result}]);`);
+                break;
+              }
+            }
+            break;
+          }
+        }
+      }
+    }
+
+    const encoderCommands = [];
+    for (let i = 0; i < commandEncoders.length; i++) {
+      const ce = commandEncoders[i];
+      encoderCommands.push(...ce.commands);
+      encoderCommands.push("\n");
+    }
+
+    const reorderedCommands = [];
+    for (let i = 0; i < numCommands; i++) {
+      const cmd = frameCommands[i];
+      if (cmd.indexOf("submit") === -1 && encoderCommands.indexOf(cmd) === -1) {
+        reorderedCommands.push(cmd);
+      }
+    }
+    reorderedCommands.push("\n");
+    reorderedCommands.push(...encoderCommands);
+
+    this._frameCommands[frameIndex] = reorderedCommands;
+  }
+
   generateOutput() {
     const unusedObjects = new Set();
     this._isRecording = false;
@@ -238,6 +313,11 @@ export class WebGPURecorder {
         this._removeUnusedCommands(this.__frameObjects[fi], this._frameCommandObjects[fi], unusedObjects, null);
         this._frameCommands[fi] = this._frameCommands[fi].filter((cmd) => !!cmd);
       }
+
+      if (this.config.compactCommands) {
+        this._reorderFrameCommands(fi);
+      }
+
       s += `
       async function f${fi}() {
           ${this._getVariableDeclarations(fi)}

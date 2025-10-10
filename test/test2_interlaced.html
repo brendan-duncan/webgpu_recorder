@@ -1,0 +1,16 @@
+<html>
+    <body>
+        <canvas id="#webgpu" width=800 height=600></canvas>
+        <script id="webgpu_recorder" type="module">
+            import {WebGPURecorder} from "../webgpu_recorder.js";
+            new WebGPURecorder({
+                "frames": 100,
+                "export": "test_interlaced",
+                "width": 800,
+                "height": 600,
+                "compactCommands": true
+            });
+        </script>
+        <script type="module" src="test_interlaced.js"></script>
+    </body>
+</html>
