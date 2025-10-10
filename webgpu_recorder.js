@@ -7,9 +7,7 @@ export function webgpu_recorder_download_data(data, filename) {
     const link = document.createElement("a");
     link.href = URL.createObjectURL(new Blob([data], { type: "text/html" }));
     link.download = filename;
-    document.body.appendChild(link);
     link.click();
-    document.body.removeChild(link);
   } catch (e) {
   }
 }
@@ -45,11 +43,9 @@ export class WebGPURecorder {
     this.__initializeObjects = [];
     this.__currentFrameObjects = null;
     this._frameIndex = -1;
-    this._isRecording = false;
     this._frameVariables = {};
     this._arrayCache = [];
     this._totalData = 0;
-    this._isRecording = true;
     this._initalized = true;
     this._frameVariables[-1] = new Set();
     this._adapter = null;
@@ -57,7 +53,10 @@ export class WebGPURecorder {
     this._unusedTextureViews = new Map();
     this._unusedBuffers = new Set();
     this._dataCacheObjects = [];
+    this._frameDataCount = {};
     this._externalImageBufferPromises = [];
+
+    this._isRecording = true;
 
     // Check if the browser supports WebGPU
     if (!navigator.gpu) {
@@ -118,22 +117,32 @@ export class WebGPURecorder {
 
   // private:
   _frameStart() {
-    this._frameIndex++;
-    this._frameVariables[this._frameIndex] = new Set();
-    this._currentFrameCommands = [];
-    this._frameCommands.push(this._currentFrameCommands);
-    this._currentFrameObjects = [];
-    this._frameObjects.push(this._currentFrameObjects);
-    this.__currentFrameObjects = [];
-    this.__frameObjects.push(this.__currentFrameObjects);
+    if (this._isRecording) {
+      if (this._frameIndex > -1) {
+        // If the last frame was empty, don't record it.
+        if (this._currentFrameCommands.length === 0) {
+          return;
+        }
+      }
+      this._frameIndex++;
+      this._frameVariables[this._frameIndex] = new Set();
+      this._currentFrameCommands = [];
+      this._frameCommands.push(this._currentFrameCommands);
+      this._currentFrameObjects = [];
+      this._frameObjects.push(this._currentFrameObjects);
+      this.__currentFrameObjects = [];
+      this.__frameObjects.push(this.__currentFrameObjects);
 
-    this._currentFrameCommandObjects = [];
-    this._frameCommandObjects.push(this._currentFrameCommandObjects);
+      this._currentFrameCommandObjects = [];
+      this._frameCommandObjects.push(this._currentFrameCommandObjects);
+    }
   }
 
   _frameEnd() {
     if (this._frameIndex === this.config.maxFrameCount) {
       this.generateOutput();
+      this._frameIndex++;
+      return;
     }
   }
 
@@ -148,6 +157,21 @@ export class WebGPURecorder {
         commands[i] = removeValue;
       }
     }
+  }
+
+  _getDataVariables() {
+    let s = "";
+    for (let i = 0, l = this._arrayCache.length; i < l; ++i) {
+      if (this._arrayCache[i].array === null) {
+        continue;
+      }
+      if (i === 0) {
+        s = `let ${this._getDataVariable(i)}`;
+      } else {
+        s += `, ${this._getDataVariable(i)}`;
+      }
+    }
+    return s;
   }
 
   generateOutput() {
@@ -182,8 +206,8 @@ export class WebGPURecorder {
             }
             if (dataObj.length === 0) {
               this._arrayCache[di].length = 0;
-              this._arrayCache[di].type = "Uint8Array";
-              this._arrayCache[di].array = new Uint8Array(0);
+              this._arrayCache[di].type = "";
+              this._arrayCache[di].array = null;
             }
           }
         }
@@ -193,10 +217,10 @@ export class WebGPURecorder {
     let s =`
     <!DOCTYPE html>
     <html>
-        <body style="text-align: center;">
+        <body style="text-align: center; margin: 0; padding: 0;">
             <canvas id="#webgpu" width=${this.config.canvasWidth} height=${this.config.canvasHeight}></canvas>
             <script>
-    let D = new Array(${this._arrayCache.length});
+    ${this._getDataVariables()};
     async function main() {
       await loadData();
 
@@ -273,21 +297,24 @@ export class WebGPURecorder {
         }
         return new Uint8Array(x.buffer, 0, x.length);
     }
-    
+
     async function loadData() {\n`;
 
     this._encodedData = [];
-    
+
     const self = this;
     Promise.all(this._externalImageBufferPromises).then(() => {
       self._externalImageBufferPromises.length = 0;
       const promises = [];
       for (let ai = 0; ai < self._arrayCache.length; ++ai) {
         const a = self._arrayCache[ai];
+        if (a.array === null) {
+          continue;
+        }
         promises.push(new Promise((resolve) => {
           self._encodeDataUrl(a.array).then((b64) => {
             self._encodedData[ai] = b64;
-            s += `D[${ai}] = await B64ToA("${b64}", "${a.type}", ${a.length});\n`;
+            s += `${self._getDataVariable(ai)} = await B64ToA("${b64}", "${a.type}", ${a.length});\n`;
             resolve();
           });
         }));
@@ -497,7 +524,7 @@ export class WebGPURecorder {
           const cacheIndex = this._getDataCache(buffer, 0, buffer.byteLength, buffer);
           // Set the mappedRange buffer data in the recording to what is in the buffer
           // at the time unmap is called.
-          this._recordLine(`new Uint8Array(${this._getObjectVariable(buffer)}).set(D[${cacheIndex}]);`, object);
+          this._recordLine(`new Uint8Array(${this._getObjectVariable(buffer)}).set(${this._getDataVariable(cacheIndex)});`, object);
           this._recordCommand("", buffer, "__writeData", null, [cacheIndex], true);
         }
         delete object.__mappedRanges;
@@ -552,7 +579,7 @@ export class WebGPURecorder {
       try {
         const bytes = new Uint8Array(size);
         cacheIndex = this._getDataCache(bytes, 0, size, texture, false);
-        this._recordLine(`${this._getObjectVariable(queue)}.writeTexture(${this._stringifyObject(method, args[1])}, D[${cacheIndex}], {bytesPerRow:${bytesPerRow}}, ${this._stringifyObject(method, copySize)});`, object);
+        this._recordLine(`${this._getObjectVariable(queue)}.writeTexture(${this._stringifyObject(method, args[1])}, ${this._getDataVariable(cacheIndex)}, {bytesPerRow:${bytesPerRow}}, ${this._stringifyObject(method, copySize)});`, object);
         this._recordCommand(false, queue, "__writeTexture", null, [args[1], { __data: cacheIndex }, { bytesPerRow }, copySize], true);
       } catch (e) {
         console.error(e.message);
@@ -658,7 +685,7 @@ export class WebGPURecorder {
         if (toJson) {
           s += `{ "__data": ${value.__data} }`;
         } else {
-          s += `D[${value.__data}]`;
+          s += this._getDataVariable(value.__data);
         }
       } else if (value.constructor === Array) {
         s += this._stringifyArray(value, toJson);
@@ -702,15 +729,42 @@ export class WebGPURecorder {
   }
 
   _compareCacheData(a, b) {
-    if (a.length != b.length) {
+    if (a.length !== b.length) {
       return false;
     }
+
+    if (a.length === 0) {
+      return true;
+    }
+
+    if ((a.length & 3) === 0) {
+      const a32 = new Uint32Array(a.buffer, a.byteOffset, a.length / 4);
+      const b32 = new Uint32Array(b.buffer, b.byteOffset, b.length / 4);
+      for (let i = 0, l = a32.length; i < l; ++i) {
+        if (a32[i] !== b32[i]) {
+          return false;
+        }
+      }
+      return true;
+    }
+
     for (let i = 0, l = a.length; i < l; ++i) {
       if (a[i] != b[i]) {
         return false;
       }
     }
     return true;
+  }
+
+  _getDataVariable(index) {
+    const cache = this._arrayCache[index];
+    if (!cache) {
+      return "null";
+    }
+    if (cache.frame < 0) {
+      return `D_F_1_${cache.index}`;
+    }
+    return `D_F${cache.frame}_${cache.index}`;
   }
 
   _getDataCache(heap, offset, length, object, skipCompare) {
@@ -727,27 +781,33 @@ export class WebGPURecorder {
 
       for (let ai = 0; ai < self._arrayCache.length; ++ai) {
         const c = self._arrayCache[ai];
-        if (c.length === length) {
-          if (this._compareCacheData(this._arrayCache[ai].array, view)) {
-            cacheIndex = ai;
-            break;
-          }
+        if (this._compareCacheData(this._arrayCache[ai].array, view)) {
+          cacheIndex = ai;
+          break;
         }
       }
 
       if (cacheIndex === -1) {
+        this._frameDataCount[this._frameIndex] = (this._frameDataCount[this._frameIndex] || 0) + 1;
+
         cacheIndex = self._arrayCache.length;
         const arrayCopy = Uint8Array.from(view);
         self._arrayCache.push({
+          frame: self._frameIndex,
+          index: self._frameDataCount[self._frameIndex],
           length: byteLength,
           type: heap.constructor === "ArrayBuffer" ? Uint8Array : heap.constructor.name,
           array: arrayCopy
         });
       }
     } else {
+      this._frameDataCount[this._frameIndex] = (this._frameDataCount[this._frameIndex] || 0) + 1;
+
       cacheIndex = self._arrayCache.length;
       const array = heap;
       self._arrayCache.push({
+        frame: self._frameIndex,
+        index: self._frameDataCount[self._frameIndex],
         length,
         type: heap.constructor === "ArrayBuffer" ? Uint8Array : heap.constructor.name,
         array
@@ -896,7 +956,7 @@ export class WebGPURecorder {
         if (toJson) {
           argStrings.push(`{ "__data": ${a.__data} }`); // This is a captured data buffer.
         } else {
-          argStrings.push(`D[${a.__data}]`);
+          argStrings.push(this._getDataVariable(a.__data));
         }
       } else if (a.__id) {
         if (toJson) {
