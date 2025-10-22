@@ -56,6 +56,7 @@ export class WebGPURecorder {
     this._dataCacheObjects = [];
     this._frameDataCount = {};
     this._externalImageBufferPromises = [];
+    this._labelCounts = new Map();
 
     this._isRecording = true;
 
@@ -517,7 +518,10 @@ export class WebGPURecorder {
   }
 
   _registerObject(object) {
-    const id = this.getNextId(object);
+    const label = `x${object?.label?.replace(/\W/g, "_") ?? ''}${object.constructor.name.replace(/^GPU/, "")}`;
+    const count = this._labelCounts.get(label) ?? 0;
+    this._labelCounts.set(label, count + 1);
+    const id = `${label}${count > 0 ? count : ""}`;
     object.__id = id;
     object.__frame = this._frameIndex;
   }
@@ -558,7 +562,7 @@ export class WebGPURecorder {
       this._registerObject(object);
     }
 
-    const name = `x${object.constructor.name.replace(/^GPU/, "")}${(object.__id || 0)}`;
+    const name = `${(object.__id || 0)}`;
 
     if (this._frameIndex != object.__frame) {
       if (!this._isFrameVariable(-1, name)) {
@@ -803,7 +807,7 @@ export class WebGPURecorder {
     const arrayCopy = Uint8Array.from(view);
     this._arrayCache[index] = {
       length: byteLength,
-      type: heap.constructor === "ArrayBuffer" ? Uint8Array : heap.constructor.name,
+      type: heap.constructor === "ArrayBuffer" ? Uint8Array : heap.constructor.name.replace(''),
       array: arrayCopy
     };
   }
