@@ -15,6 +15,11 @@ export function webgpu_recorder_download_data(data, filename) {
 export class WebGPURecorder {
   // public:
   constructor(options) {
+    // If the browser doesn't support WebGPU, there's nothing to do.
+    if (!navigator.gpu) {
+      return;
+    }
+
     options = options || {};
     this.config = {
       maxFrameCount: Math.max((options.frames ?? 100) - 1, 1),
@@ -28,28 +33,29 @@ export class WebGPURecorder {
     };
 
     this._objectIndex = 1;
-    this._initalized = false;
-    
-    this._initializeCommandObjects = [];
-    this._frameCommandObjects = [];
-    this._currentFrameCommandObjects = null;
 
-    this._initializeCommands = [];
-    this._frameCommands = [];
-    this._frameObjects = [];
-    this._initializeObjects = [];
-    this._currentFrameCommands = null;
-    this._currentFrameObjects = null;
-    this.__frameObjects = [];
-    this.__initializeObjects = [];
-    this.__currentFrameObjects = null;
     this._frameIndex = -1;
+    this._adapter = null;
+
+    this._initializeObjects = [];
+    this._initializeCommands = [];
+    this._initializeCommandObjects = [];
+
+    this._currentFrameCommands = null;
+    this._frameCommands = [];
+    this._currentFrameObjects = null;
+    this._frameObjects = [];
+    this._currentFrameCommandObjects = null;
+    this._frameCommandObjects = [];
+    this._currentFrameCommandDependencies = null;
+    this._frameCommandDependencies = [];
+
     this._frameVariables = {};
+    this._frameVariables[-1] = new Set();
+
     this._arrayCache = [];
     this._totalData = 0;
-    this._initalized = true;
-    this._frameVariables[-1] = new Set();
-    this._adapter = null;
+    
     this._unusedTextures = new Set();
     this._unusedTextureViews = new Map();
     this._unusedBuffers = new Set();
@@ -59,11 +65,6 @@ export class WebGPURecorder {
     this._labelCounts = new Map();
 
     this._isRecording = true;
-
-    // Check if the browser supports WebGPU
-    if (!navigator.gpu) {
-      return;
-    }
 
     this._gpuWrapper = new GPUObjectWrapper(this);
     this._gpuWrapper.onPromiseResolve = this._onAsyncResolve.bind(this);
@@ -118,33 +119,51 @@ export class WebGPURecorder {
   }
 
   // private:
-  _frameStart() {
+  _frameStart(timestamp) {
+    this._lastFrameTime = timestamp;
     if (this._isRecording) {
       if (this._frameIndex > -1) {
         // If the last frame was empty, don't record it.
         if (this._currentFrameCommands.length === 0) {
           return;
         }
+
+        let hasCommand = false;
+        for (const cmd of this._currentFrameCommands) {
+          if (cmd.indexOf("requestAdapter") === -1 && cmd.indexOf("requestDevice") === -1) {
+            hasCommand = true;
+            break;
+          }
+        }
+
+        if (!hasCommand) {
+          return;
+        }
       }
+
       this._frameIndex++;
       this._frameVariables[this._frameIndex] = new Set();
+
       this._currentFrameCommands = [];
       this._frameCommands.push(this._currentFrameCommands);
       this._currentFrameObjects = [];
       this._frameObjects.push(this._currentFrameObjects);
-      this.__currentFrameObjects = [];
-      this.__frameObjects.push(this.__currentFrameObjects);
 
       this._currentFrameCommandObjects = [];
       this._frameCommandObjects.push(this._currentFrameCommandObjects);
+
+      this._currentFrameCommandDependencies = [];
+      this._frameCommandDependencies.push(this._currentFrameCommandDependencies);
     }
   }
 
-  _frameEnd() {
-    if (this._frameIndex === this.config.maxFrameCount) {
-      this.generateOutput();
-      this._frameIndex++;
-      return;
+  _frameEnd(timestamp) {
+    if (this._isRecording) {
+      if (this._frameIndex === this.config.maxFrameCount) {
+        this.generateOutput();
+        this._frameIndex++;
+        return;
+      }
     }
   }
 
@@ -180,19 +199,6 @@ export class WebGPURecorder {
     const frameCommands = this._frameCommands[frameIndex].filter((cmd) => cmd && cmd !== "\n");
     const cmdObjects = this._frameCommandObjects[frameIndex];
     const numCommands = frameCommands.length;
-
-    function _addCommandEncoderCommands(i, obj, cmds) {
-      for (let j = i, l = numCommands; j < l; j++) {
-        const cmd = frameCommands[j];
-        const cmdObj = cmdObjects[j];
-        if (cmdObj?.object === obj) {
-          cmds.push(cmd);
-          if (cmdObj?.result) {
-            _addCommandEncoderCommands(j + 1, cmdObj.result, cmds);
-          }
-        }
-      }
-    }
 
     let queue = null;
     for (let i = 0; i < numCommands; i++) {
@@ -266,7 +272,6 @@ export class WebGPURecorder {
       }
 
       this._removeUnusedCommands(this._initializeObjects, this._initializeCommands, unusedObjects, "");
-      this._removeUnusedCommands(this.__initializeObjects, this._initializeCommandObjects, unusedObjects, null);
     }
 
     this._initializeCommands = this._initializeCommands.filter((cmd) => !!cmd);
@@ -311,7 +316,6 @@ export class WebGPURecorder {
     for (let fi = 0, fl = this._frameCommands.length; fi < fl; ++fi) {
       if (this.config.removeUnusedResources) {
         this._removeUnusedCommands(this._frameObjects[fi], this._frameCommands[fi], unusedObjects, "");
-        this._removeUnusedCommands(this.__frameObjects[fi], this._frameCommandObjects[fi], unusedObjects, null);
         this._frameCommands[fi] = this._frameCommands[fi].filter((cmd) => !!cmd);
       }
 
@@ -423,6 +427,39 @@ export class WebGPURecorder {
       });
       reader.readAsDataURL(new File([bytes], "", { type }));
     });
+  }
+
+   _getArrayDependencies(array, dependencies) {
+    for (const value of array) {
+      if (!value) {
+          continue;
+      } else if (value instanceof ArrayBuffer || value?.buffer instanceof ArrayBuffer) {
+        continue;
+      } else if (value && value.__id) {
+        dependencies.push(this._getObjectVariable(value));
+      } else if (value instanceof Array) {
+        this._getArrayDependencies(value, dependencies);
+      } else if (value instanceof Object) {
+        this._getObjectDependencies(value, dependencies);
+      }
+    }
+  }
+
+  _getObjectDependencies(object, dependencies) {
+    for (const key in object) {
+      const value = object[key];
+      if (!value) {
+          continue;
+      } else if (value instanceof ArrayBuffer || value?.buffer instanceof ArrayBuffer) {
+        continue;
+      } else if (value && value.__id) {
+        dependencies.push(this._getObjectVariable(value));
+      } else if (value instanceof Array) {
+        this._getArrayDependencies(value, dependencies);
+      } else if (value instanceof Object) {
+        this._getObjectDependencies(value, dependencies);
+      }
+    }
   }
 
   _dispatchEvent(message) {
@@ -581,6 +618,9 @@ export class WebGPURecorder {
   }
 
   _onAsyncResolve(object, method, args, id, result) {
+    if (!this._isRecording) {
+      return;
+    }
     if (method === "requestDevice") {
       const adapter = object;
       if (adapter.__id === undefined) {
@@ -720,7 +760,7 @@ export class WebGPURecorder {
       }
       first = false;
       s += `"${key}":`;
-      if (method === "requestDevice") {
+      if (method === "requestDevice" && this._adapter) {
         if (key === "requiredFeatures") {
           s += "requiredFeatures";
           continue;
@@ -1097,11 +1137,8 @@ export class WebGPURecorder {
     async = async ? "await " : "";
 
     let obj = object;
-    const hasAdapter = !!this._adapter;
 
-    if (!hasAdapter && method === "requestAdapter") {
-      this._adapter = result;
-    } else if (method === "createTexture") {
+    if (method === "createTexture") {
       this._unusedTextures.add(result.__id);
       obj = result;
     } else if (method === "createView") {
@@ -1115,14 +1152,35 @@ export class WebGPURecorder {
       obj = args[0];
     }
 
+    if (this._currentFrameCommandDependencies) {
+      const resultObj = this._getObjectVariable(result);
+      if (resultObj === "xBindGroup151") {
+        console.log("here");
+      }
+      const commandDependencies = [this._getObjectVariable(object)];
+      for (const arg of args) {
+        if (!arg) {
+          continue;
+        } else if (arg instanceof ArrayBuffer || arg?.buffer instanceof ArrayBuffer) {
+          continue;
+        } else if (arg && arg.__id) {
+          commandDependencies.push(this._getObjectVariable(arg));
+        } else if (arg instanceof Array) {
+          this._getArrayDependencies(arg, commandDependencies);
+        } else if (arg instanceof Object) {
+          this._getObjectDependencies(arg, commandDependencies);
+        }
+      }
+
+      this._currentFrameCommandDependencies.push(commandDependencies);
+    }
+
     const newArgs = `[${this._stringifyArgs(method, args, true)}]`;
     const commandObj = { "object": this._getObjectVariable(object), method, "result": this._getObjectVariable(result), args: newArgs, async };
     if (this._frameIndex === -1) {
       this._initializeCommandObjects.push(commandObj);
-      this.__initializeObjects.push(obj);
     } else {
       this._currentFrameCommandObjects.push(commandObj);
-      this.__currentFrameObjects.push(obj);
     }
 
     if (skipLine) {
@@ -1147,19 +1205,22 @@ export class WebGPURecorder {
       this._recordLine("\n", null);
     }
 
-    if (!hasAdapter && method === "requestAdapter") {
+    if (method === "requestAdapter") {
       const adapter = this._getObjectVariable(result);
-      this._recordLine(`const requiredFeatures = [];
-        for (const x of ${adapter}.features) {
-            requiredFeatures.push(x);
-        }`, obj);
-      this._recordLine(`const requiredLimits = {};
-        const exclude = new Set(["minSubgroupSize", "maxSubgroupSize"]);
-        for (const x in ${adapter}.limits) {
-          if (!exclude.has(x)) {
-            requiredLimits[x] = ${adapter}.limits[x];
-          }
-        }`, obj);
+      if (this._adapter == null) {
+        this._adapter = adapter;
+        this._recordLine(`const requiredFeatures = [];
+          for (const x of ${adapter}.features) {
+              requiredFeatures.push(x);
+          }`, obj);
+        this._recordLine(`const requiredLimits = {};
+          const exclude = new Set(["minSubgroupSize", "maxSubgroupSize"]);
+          for (const x in ${adapter}.limits) {
+            if (!exclude.has(x)) {
+              requiredLimits[x] = ${adapter}.limits[x];
+            }
+          }`, obj);
+      }
     }
 
     if (result instanceof GPUDevice) {
@@ -1513,7 +1574,7 @@ function _getFixedUrl(url) {
   }
   return url;
 }
-  
+
 const _origFetch = fetch;
 self.fetch = function (input, init) {
   let url = input instanceof Request ? input.url : input;
