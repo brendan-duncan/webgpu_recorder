@@ -1,6 +1,7 @@
 const _postMessage = self.postMessage;
 const _dispatchEvent = self.dispatchEvent;
 const _document = self.document;
+console.log("WebGPU Recorder Loaded", _postMessage, _dispatchEvent, _document);
 
 export function webgpu_recorder_download_data(data, filename) {
   try {
@@ -74,9 +75,40 @@ export class WebGPURecorder {
     this._registerObject(navigator.gpu);
     this._recordLine(`${this._getObjectVariable(navigator.gpu)} = navigator.gpu;`, null);
 
-    this._wrapCanvases();
-
     const self = this;
+
+    if (_document?.body) {
+      // If the document body is available, create the status elements now,
+      // which overlays information about the inspector.
+      this._createOverlayElement();
+      this._wrapCanvases();
+    } else if (_document) {
+      // If there is a document but no body yet, wait for the DOMContentLoaded event.
+      _document.addEventListener("DOMContentLoaded", () => {
+        self._createOverlayElement();
+
+        const iframes = _document.getElementsByTagName("iframe");
+        if (iframes.length > 0) {
+          for (const iframe of iframes) {
+            iframe.addEventListener("load", () => {
+              iframe.contentWindow.dispatchEvent(new CustomEvent("__WebGPURecorder", { detail: {
+                __webgpuRecorder: true,
+                __webgpuRecorderPage: true,
+                __webgpuRecorderWorker: !_document,
+                frames: self.config.maxFrameCount,
+                export: self.config.exportName,
+                download: self.config.download,
+                action: "webgpu_recorder_start_recording" } }));
+            });
+          }
+        }
+
+        const canvases = _document.getElementsByTagName("canvas");
+        for (const canvas of canvases) {
+          self._wrapCanvas(canvas);
+        }
+      });
+    }
 
     // Capture any dynamically created canvases
     if (_document) {
@@ -85,6 +117,17 @@ export class WebGPURecorder {
         const element = __createElement.call(_document, type);
         if (type === "canvas") {
           self._wrapCanvas(element);
+        } else if (type === "iframe") {
+          element.addEventListener("load", () => {
+            element.contentWindow.dispatchEvent(new CustomEvent("__WebGPURecorder", { detail: {
+              __webgpuRecorder: true,
+              __webgpuRecorderPage: true,
+              __webgpuRecorderWorker: !_document,
+              frames: self.config.maxFrameCount,
+              export: self.config.exportName,
+              download: self.config.download,
+              action: "webgpu_recorder_start_recording" } }));
+          });
         }
         return element;
       };
@@ -119,46 +162,45 @@ export class WebGPURecorder {
   }
 
   // private:
+  _createOverlayElement() {
+    const statusContainer = _document.createElement("div");
+    statusContainer.style = "position: absolute; top: 0px; left: 0px; z-index: 1000000; margin-left: 10px; margin-top: 5px; padding-left: 5px; padding-right: 10px; background-color: rgba(0, 0, 1, 0.75); border-radius: 5px; box-shadow: 3px 3px 5px rgba(0, 0, 0, 0.5); color: #fff; font-size: 12pt;";
+    _document.body.insertBefore(statusContainer, _document.body.firstChild);
+
+    this._recordingStatus = _document.createElement("div");
+    this._recordingStatus.title = "WebGPU Recorder Running";
+    this._recordingStatus.style = "height: 10px; width: 10px; display: inline-block; margin-right: 5px; background-color: #0f0; border-radius: 50%; border: 1px solid #000; box-shadow: inset -4px -4px 4px -3px rgb(255,100,0), 2px 2px 3px rgba(0,0,0,0.8);";
+    statusContainer.appendChild(this._recordingStatus);
+  }
+
   _frameStart(timestamp) {
     this._lastFrameTime = timestamp;
     if (this._isRecording) {
-      if (this._frameIndex > -1) {
-        // If the last frame was empty, don't record it.
-        if (this._currentFrameCommands.length === 0) {
-          return;
-        }
-
-        let hasCommand = false;
-        for (const cmd of this._currentFrameCommands) {
-          if (cmd.indexOf("requestAdapter") === -1 && cmd.indexOf("requestDevice") === -1) {
-            hasCommand = true;
-            break;
-          }
-        }
-
-        if (!hasCommand) {
-          return;
-        }
-      }
-
       this._frameIndex++;
       this._frameVariables[this._frameIndex] = new Set();
 
       this._currentFrameCommands = [];
-      this._frameCommands.push(this._currentFrameCommands);
       this._currentFrameObjects = [];
-      this._frameObjects.push(this._currentFrameObjects);
-
       this._currentFrameCommandObjects = [];
-      this._frameCommandObjects.push(this._currentFrameCommandObjects);
-
       this._currentFrameCommandDependencies = [];
-      this._frameCommandDependencies.push(this._currentFrameCommandDependencies);
     }
   }
 
   _frameEnd(timestamp) {
     if (this._isRecording) {
+      if (this._currentFrameCommands.length === 0) {
+        this._currentFrameCommands = null;
+        this._currentFrameObjects = null;
+        this._currentFrameCommandObjects = null;
+        this._frameIndex--;
+        return;
+      }
+
+      this._frameCommands.push(this._currentFrameCommands);
+      this._frameObjects.push(this._currentFrameObjects);
+      this._frameCommandObjects.push(this._currentFrameCommandObjects);
+      this._frameCommandDependencies.push(this._currentFrameCommandDependencies);
+
       if (this._frameIndex === this.config.maxFrameCount) {
         this.generateOutput();
         this._frameIndex++;
@@ -259,6 +301,8 @@ export class WebGPURecorder {
   generateOutput() {
     const unusedObjects = new Set();
     this._isRecording = false;
+
+    this._recordingStatus.style.backgroundColor = "#f00";
 
     if (this.config.removeUnusedResources) {
       for (const object of this._unusedTextures) {
