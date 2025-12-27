@@ -1257,14 +1257,32 @@ WebGPURecorder._skipMethods = new Set([
 ]);
 
 WebGPURecorder._formatInfo = {
+  // 8-bit formats
   "r8unorm": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 1 },
   "r8snorm": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 1 },
   "r8uint": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 1 },
   "r8sint": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 1 },
+
+  // 16-bit formats
+  "r16unorm": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 2 },
+  "r16snorm": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 2 },
+  "r16uint": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 2 },
+  "r16sint": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 2 },
+  "r16float": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 2 },
   "rg8unorm": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 2 },
   "rg8snorm": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 2 },
   "rg8uint": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 2 },
   "rg8sint": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 2 },
+
+  // 32-bit formats
+  "r32uint": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 4 },
+  "r32sint": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 4 },
+  "r32float": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 4 },
+  "rg16unorm": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 4 },
+  "rg16snorm": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 4 },
+  "rg16uint": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 4 },
+  "rg16sint": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 4 },
+  "rg16float": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 4 },
   "rgba8unorm": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 4 },
   "rgba8unorm-srgb": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 4 },
   "rgba8snorm": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 4 },
@@ -1272,33 +1290,38 @@ WebGPURecorder._formatInfo = {
   "rgba8sint": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 4 },
   "bgra8unorm": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 4 },
   "bgra8unorm-srgb": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 4 },
-  "r16uint": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 2 },
-  "r16sint": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 2 },
-  "r16float": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 2 },
-  "rg16uint": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 4 },
-  "rg16sint": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 4 },
-  "rg16float": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 4 },
-  "rgba16uint": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 8 },
-  "rgba16sint": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 8 },
-  "rgba16float": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 8 },
-  "r32uint": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 4 },
-  "r32sint": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 4 },
-  "r32float": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 4 },
+  // Packed 32-bit formats
+  "rgb9e5ufloat": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 4 },
+  "rgb10a2uint": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 4 },
+  "rgb10a2unorm": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 4 },
+  "rg11b10ufloat": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 4 },
+
+  // 64-bit formats
   "rg32uint": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 8 },
   "rg32sint": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 8 },
   "rg32float": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 8 },
+  "rgba16unorm": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 8 },
+  "rgba16snorm": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 8 },
+  "rgba16uint": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 8 },
+  "rgba16sint": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 8 },
+  "rgba16float": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 8 },
+  
+  // 128-bit formats    
   "rgba32uint": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 16 },
   "rgba32sint": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 16 },
   "rgba32float": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 16 },
-  "rgb10a2unorm": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 4 },
-  "rg11b10ufloat": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 4 },
-  "rgb9e5ufloat": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 4 },
+  
+  // Depth-stencil formats 
   "stencil8": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 1 },
   "depth16unorm": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 2 },
-  "depth32float": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 4 },
   "depth24plus": { "blockWidth": 1, "blockHeight": 1 },
   "depth24plus-stencil8": { "blockWidth": 1, "blockHeight": 1 },
+  "depth32float": { "blockWidth": 1, "blockHeight": 1, "bytesPerBlock": 4 },
+  
+  // "depth32float-stencil8" feature
   "depth32float-stencil8": { "blockWidth": 1, "blockHeight": 1 },
+
+  // BC compressed formats
   "bc1-rgba-unorm": { "blockWidth": 4, "blockHeight": 4, "bytesPerBlock": 8 },
   "bc1-rgba-unorm-srgb": { "blockWidth": 4, "blockHeight": 4, "bytesPerBlock": 8 },
   "bc2-rgba-unorm": { "blockWidth": 4, "blockHeight": 4, "bytesPerBlock": 16 },
@@ -1313,6 +1336,8 @@ WebGPURecorder._formatInfo = {
   "bc6h-rgb-float": { "blockWidth": 4, "blockHeight": 4, "bytesPerBlock": 16 },
   "bc7-rgba-unorm": { "blockWidth": 4, "blockHeight": 4, "bytesPerBlock": 16 },
   "bc7-rgba-unorm-srgb": { "blockWidth": 4, "blockHeight": 4, "bytesPerBlock": 16 },
+  
+  // ETC2 compressed formats
   "etc2-rgb8unorm": { "blockWidth": 4, "blockHeight": 4, "bytesPerBlock": 8 },
   "etc2-rgb8unorm-srgb": { "blockWidth": 4, "blockHeight": 4, "bytesPerBlock": 8 },
   "etc2-rgb8a1unorm": { "blockWidth": 4, "blockHeight": 4, "bytesPerBlock": 8 },
@@ -1323,6 +1348,8 @@ WebGPURecorder._formatInfo = {
   "eac-r11snorm": { "blockWidth": 4, "blockHeight": 4, "bytesPerBlock": 8 },
   "eac-rg11unorm": { "blockWidth": 4, "blockHeight": 4, "bytesPerBlock": 16 },
   "eac-rg11snorm": { "blockWidth": 4, "blockHeight": 4, "bytesPerBlock": 16 },
+  
+  // ASTC compressed formats
   "astc-4x4-unorm": { "blockWidth": 4, "blockHeight": 4, "bytesPerBlock": 16 },
   "astc-4x4-unorm-srgb": { "blockWidth": 4, "blockHeight": 4, "bytesPerBlock": 16 },
   "astc-5x4-unorm": { "blockWidth": 5, "blockHeight": 4, "bytesPerBlock": 16 },
