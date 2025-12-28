@@ -1,7 +1,6 @@
 const _postMessage = self.postMessage;
 const _dispatchEvent = self.dispatchEvent;
 const _document = self.document;
-console.log("WebGPU Recorder Loaded", _postMessage, _dispatchEvent, _document);
 
 export function webgpu_recorder_download_data(data, filename) {
   try {
