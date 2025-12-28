@@ -1195,11 +1195,8 @@ export class WebGPURecorder {
       obj = args[0];
     }
 
-    if (this._currentFrameCommandDependencies) {
-      const resultObj = this._getObjectVariable(result);
-      if (resultObj === "xBindGroup151") {
-        console.log("here");
-      }
+    // This is causing a lockup for writeBuffer commands. Look into this later.
+    /*if (this._currentFrameCommandDependencies) {
       const commandDependencies = [this._getObjectVariable(object)];
       for (const arg of args) {
         if (!arg) {
@@ -1216,7 +1213,7 @@ export class WebGPURecorder {
       }
 
       this._currentFrameCommandDependencies.push(commandDependencies);
-    }
+    }*/
 
     const newArgs = `[${this._stringifyArgs(method, args, true)}]`;
     const commandObj = { "object": this._getObjectVariable(object), method, "result": this._getObjectVariable(result), args: newArgs, async };
