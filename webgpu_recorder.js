@@ -29,7 +29,8 @@ export class WebGPURecorder {
       removeUnusedResources: !!options.removeUnusedResources,
       messageRecording: !!options.messageRecording,
       download: options.download ?? true,
-      compactCommands: !!options.compactCommands
+      compactCommands: !!options.compactCommands,
+      recordSingleFrame: !!options.recordSingleFrame
     };
 
     this._objectIndex = 1;
@@ -63,6 +64,8 @@ export class WebGPURecorder {
     this._externalImageBufferPromises = [];
     this._labelCounts = new Map();
 
+    this._usedObjectIds = new Set();
+
     this._isRecording = true;
 
     this._gpuWrapper = new GPUObjectWrapper(this);
@@ -71,7 +74,11 @@ export class WebGPURecorder {
     this._gpuWrapper.onPostCall = this._onMethodCall.bind(this);
 
     this._registerObject(navigator.gpu);
-    this._recordLine(`${this._getObjectVariable(navigator.gpu)} = navigator.gpu;`, null);
+    this._recordLine(`${this._getObjectVariable(navigator.gpu)} = navigator.gpu;`, navigator.gpu);
+
+    if (this.config.recordSingleFrame) {
+      this._usedObjectIds.add(navigator.gpu.__id);
+    }
 
     const self = this;
 
@@ -218,6 +225,63 @@ export class WebGPURecorder {
     }
   }
 
+  _filterFrameCommands(frameIndex) {
+    const commands = this._frameCommands[frameIndex];
+    const objects = this._frameObjects[frameIndex];
+    const newCommands = [];
+    const newObjects = [];
+    for (let i = 0; i < commands.length; ++i) {
+      const cmd = commands[i];
+      const obj = objects[i];
+      if (!cmd || cmd === "\n") {
+        continue;
+      }
+      if (this._commandUsesUsedObject(cmd)) {
+        newCommands.push(cmd);
+        newObjects.push(obj);
+      }
+    }
+    this._frameCommands[frameIndex] = newCommands;
+    this._frameObjects[frameIndex] = newObjects;
+  }
+
+  _commandUsesUsedObject(cmd) {
+    if (!cmd) return false;
+    if (cmd.indexOf("setCanvasSize") !== -1) {
+      return true;
+    }
+    const idRegex = /x[a-zA-Z0-9_]+/g;
+    let match;
+    while ((match = idRegex.exec(cmd)) !== null) {
+      if (this._usedObjectIds.has(match[0])) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  _filterInitializeCommands() {
+    const navigatorGpuId = navigator.gpu.__id;
+    const newCommands = [];
+    const newObjects = [];
+    for (let i = 0; i < this._initializeCommands.length; ++i) {
+      const cmd = this._initializeCommands[i];
+      const obj = this._initializeObjects[i];
+      if (!cmd || cmd === "\n") {
+        continue;
+      }
+      if (this.config.recordSingleFrame && navigatorGpuId && cmd.indexOf(navigatorGpuId) !== -1) {
+        newCommands.push(cmd);
+        newObjects.push(obj);
+      } else if (this._commandUsesUsedObject(cmd)) {
+        newCommands.push(cmd);
+        newObjects.push(obj);
+      }
+    }
+    this._initializeCommands = newCommands;
+    this._initializeObjects = newObjects;
+  }
+
   _getDataVariables() {
     let s = "";
     for (let i = 0, l = this._arrayCache.length; i < l; ++i) {
@@ -300,6 +364,14 @@ export class WebGPURecorder {
 
     this._recordingStatus.style.backgroundColor = "#f00";
 
+    if (this.config.recordSingleFrame) {
+      const lastFrameIndex = this._frameCommands.length - 1;
+      this._frameCommands = [this._frameCommands[lastFrameIndex]];
+      this._frameObjects = [this._frameObjects[lastFrameIndex]];
+      this._frameCommandObjects = [this._frameCommandObjects[lastFrameIndex]];
+      this._filterInitializeCommands();
+    }
+
     if (this.config.removeUnusedResources) {
       for (const object of this._unusedTextures) {
         unusedObjects.add(object);
@@ -361,6 +433,10 @@ export class WebGPURecorder {
       if (this.config.removeUnusedResources) {
         this._removeUnusedCommands(this._frameObjects[fi], this._frameCommands[fi], unusedObjects, "");
         this._frameCommands[fi] = this._frameCommands[fi].filter((cmd) => !!cmd);
+      }
+
+      if (this.config.recordSingleFrame && this._usedObjectIds.size > 0) {
+        this._filterFrameCommands(fi);
       }
 
       if (this.config.compactCommands) {
@@ -538,6 +614,25 @@ export class WebGPURecorder {
     this._encodedData.length = 0;
   }
 
+  _collectObjectIds(obj, visited = new Set()) {
+    if (!obj || typeof obj !== "object") {
+      return;
+    }
+    if (visited.has(obj)) {
+      return;
+    }
+    visited.add(obj);
+    if (obj.__id) {
+      this._usedObjectIds.add(obj.__id);
+    }
+    for (const key in obj) {
+      const value = obj[key];
+      if (value && typeof value === "object") {
+        this._collectObjectIds(value, visited);
+      }
+    }
+  }
+
   _wrapCanvas(c) {
     if (c.__id) {
       return;
@@ -666,7 +761,7 @@ export class WebGPURecorder {
         delete object.__mappedRanges;
       }
     } else if (method === "getCurrentTexture") {
-      this._recordLine(`setCanvasSize(${this._getObjectVariable(object)}.canvas, ${object.canvas.width}, ${object.canvas.height})`, null);
+      this._recordLine(`setCanvasSize(${this._getObjectVariable(object)}.canvas, ${object.canvas.width}, ${object.canvas.height})`, object);
       this._recordCommand("", object, "__setCanvasSize", null, [object.canvas.width, object.canvas.height], true);
     } else if (method === "createTexture") {
       args[0].usage |= GPUTextureUsage.COPY_SRC;
@@ -1191,6 +1286,22 @@ export class WebGPURecorder {
 
       if (result.__id === undefined) {
         this._registerObject(result);
+      }
+    }
+
+    if (this.config.recordSingleFrame) {
+      if (object && object.__id) {
+        this._usedObjectIds.add(object.__id);
+      }
+      if (result && result.__id) {
+        this._usedObjectIds.add(result.__id);
+      }
+      for (const arg of args) {
+        if (arg && arg.__id) {
+          this._usedObjectIds.add(arg.__id);
+        } else if (arg && typeof arg === "object") {
+          this._collectObjectIds(arg);
+        }
       }
     }
 
