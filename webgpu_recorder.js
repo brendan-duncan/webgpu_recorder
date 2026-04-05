@@ -30,8 +30,10 @@ export class WebGPURecorder {
       messageRecording: !!options.messageRecording,
       download: options.download ?? true,
       compactCommands: !!options.compactCommands,
-      recordSingleFrame: !!options.recordSingleFrame
+      recordMode: options.recordMode ?? 0
     };
+
+    this.recordSingleFrame = this.config.recordMode === 1;
 
     this._objectIndex = 1;
 
@@ -76,7 +78,7 @@ export class WebGPURecorder {
     this._registerObject(navigator.gpu);
     this._recordLine(`${this._getObjectVariable(navigator.gpu)} = navigator.gpu;`, navigator.gpu);
 
-    if (this.config.recordSingleFrame) {
+    if (this.recordSingleFrame) {
       this._usedObjectIds.add(navigator.gpu.__id);
     }
 
@@ -270,7 +272,7 @@ export class WebGPURecorder {
       if (!cmd || cmd === "\n") {
         continue;
       }
-      if (this.config.recordSingleFrame && navigatorGpuId && cmd.indexOf(navigatorGpuId) !== -1) {
+      if (this.recordSingleFrame && navigatorGpuId && cmd.indexOf(navigatorGpuId) !== -1) {
         newCommands.push(cmd);
         newObjects.push(obj);
       } else if (this._commandUsesUsedObject(cmd)) {
@@ -364,7 +366,7 @@ export class WebGPURecorder {
 
     this._recordingStatus.style.backgroundColor = "#f00";
 
-    if (this.config.recordSingleFrame) {
+    if (this.recordSingleFrame) {
       const lastFrameIndex = this._frameCommands.length - 1;
       this._frameCommands = [this._frameCommands[lastFrameIndex]];
       this._frameObjects = [this._frameObjects[lastFrameIndex]];
@@ -435,7 +437,7 @@ export class WebGPURecorder {
         this._frameCommands[fi] = this._frameCommands[fi].filter((cmd) => !!cmd);
       }
 
-      if (this.config.recordSingleFrame && this._usedObjectIds.size > 0) {
+      if (this.recordSingleFrame && this._usedObjectIds.size > 0) {
         this._filterFrameCommands(fi);
       }
 
@@ -1289,7 +1291,7 @@ export class WebGPURecorder {
       }
     }
 
-    if (this.config.recordSingleFrame) {
+    if (this.recordSingleFrame) {
       if (object && object.__id) {
         this._usedObjectIds.add(object.__id);
       }
