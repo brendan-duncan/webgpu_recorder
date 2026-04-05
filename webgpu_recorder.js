@@ -47,8 +47,6 @@ export class WebGPURecorder {
     this._frameObjects = [];
     this._currentFrameCommandObjects = null;
     this._frameCommandObjects = [];
-    this._currentFrameCommandDependencies = null;
-    this._frameCommandDependencies = [];
 
     this._frameVariables = {};
     this._frameVariables[-1] = new Set();
@@ -59,6 +57,7 @@ export class WebGPURecorder {
     this._unusedTextures = new Set();
     this._unusedTextureViews = new Map();
     this._unusedBuffers = new Set();
+    this._unusedBindGroups = new Set();
     this._dataCacheObjects = [];
     this._frameDataCount = {};
     this._externalImageBufferPromises = [];
@@ -181,7 +180,6 @@ export class WebGPURecorder {
       this._currentFrameCommands = [];
       this._currentFrameObjects = [];
       this._currentFrameCommandObjects = [];
-      this._currentFrameCommandDependencies = [];
     }
   }
 
@@ -198,7 +196,6 @@ export class WebGPURecorder {
       this._frameCommands.push(this._currentFrameCommands);
       this._frameObjects.push(this._currentFrameObjects);
       this._frameCommandObjects.push(this._currentFrameCommandObjects);
-      this._frameCommandDependencies.push(this._currentFrameCommandDependencies);
 
       if (this._frameIndex === this.config.maxFrameCount) {
         this.generateOutput();
@@ -313,12 +310,16 @@ export class WebGPURecorder {
       for (const object of this._unusedBuffers) {
         unusedObjects.add(object);
       }
+      for (const object of this._unusedBindGroups) {
+        unusedObjects.add(object);
+      }
 
       this._removeUnusedCommands(this._initializeObjects, this._initializeCommands, unusedObjects, "");
     }
 
     this._initializeCommands = this._initializeCommands.filter((cmd) => !!cmd);
-    if (this.config.removeUnusedResources) {
+    
+    /*if (this.config.removeUnusedResources) {
       for (const obj of unusedObjects) {
         for (let di = 0, dl = this._dataCacheObjects.length; di < dl; ++di) {
           let dataObj = this._dataCacheObjects[di];
@@ -336,7 +337,7 @@ export class WebGPURecorder {
           }
         }
       }
-    }
+    }*/
 
     let s =`
     <!DOCTYPE html>
@@ -409,7 +410,7 @@ export class WebGPURecorder {
         }
     }
 
-    async function B64ToA(s, type, length) {
+    async function B64ToA(type, length, s) {
         if (Uint8Array.fromBase64) {
             const s2 = s.substr(s.indexOf(",") + 1);
             const b = Uint8Array.fromBase64(s2);
@@ -439,10 +440,11 @@ export class WebGPURecorder {
         if (a.array === null) {
           continue;
         }
+        const varName = self._getDataVariable(ai);
         promises.push(new Promise((resolve) => {
           self._encodeDataUrl(a.array).then((b64) => {
             self._encodedData[ai] = b64;
-            s += `${self._getDataVariable(ai)} = await B64ToA("${b64}", "${a.type}", ${a.length});\n`;
+            s += `${varName} = await B64ToA("${a.type}", ${a.length}, "${b64}");\n`;
             resolve();
           });
         }));
@@ -470,39 +472,6 @@ export class WebGPURecorder {
       });
       reader.readAsDataURL(new File([bytes], "", { type }));
     });
-  }
-
-   _getArrayDependencies(array, dependencies) {
-    for (const value of array) {
-      if (!value) {
-          continue;
-      } else if (value instanceof ArrayBuffer || value?.buffer instanceof ArrayBuffer) {
-        continue;
-      } else if (value && value.__id) {
-        dependencies.push(this._getObjectVariable(value));
-      } else if (value instanceof Array) {
-        this._getArrayDependencies(value, dependencies);
-      } else if (value instanceof Object) {
-        this._getObjectDependencies(value, dependencies);
-      }
-    }
-  }
-
-  _getObjectDependencies(object, dependencies) {
-    for (const key in object) {
-      const value = object[key];
-      if (!value) {
-          continue;
-      } else if (value instanceof ArrayBuffer || value?.buffer instanceof ArrayBuffer) {
-        continue;
-      } else if (value && value.__id) {
-        dependencies.push(this._getObjectVariable(value));
-      } else if (value instanceof Array) {
-        this._getArrayDependencies(value, dependencies);
-      } else if (value instanceof Object) {
-        this._getObjectDependencies(value, dependencies);
-      }
-    }
   }
 
   _dispatchEvent(message) {
@@ -709,6 +678,12 @@ export class WebGPURecorder {
       return;
     }
 
+    if (method === "destroy") {
+      this._unusedBuffers.delete(object.__id);
+      this._unusedTextures.delete(object.__id);
+      this._unusedBindGroups.delete(object.__id);
+    }
+
     if (method === "copyExternalImageToTexture") {
       const queue = object;
 
@@ -746,7 +721,8 @@ export class WebGPURecorder {
       try {
         const bytes = new Uint8Array(size);
         cacheIndex = this._getDataCache(bytes, 0, size, texture, false);
-        this._recordLine(`${this._getObjectVariable(queue)}.writeTexture(${this._stringifyObject(method, args[1])}, ${this._getDataVariable(cacheIndex)}, {bytesPerRow:${bytesPerRow}}, ${this._stringifyObject(method, copySize)});`, object);
+        const textureSize = Array.isArray(copySize) ? this._stringifyArray(copySize) : this._stringifyObject(method, copySize);
+        this._recordLine(`${this._getObjectVariable(queue)}.writeTexture(${this._stringifyObject(method, args[1])}, ${this._getDataVariable(cacheIndex)}, {bytesPerRow:${bytesPerRow}}, ${textureSize});`, object);
         this._recordCommand(false, queue, "__writeTexture", null, [args[1], { __data: cacheIndex }, { bytesPerRow }, copySize], true);
       } catch (e) {
         console.error(e.message);
@@ -817,6 +793,14 @@ export class WebGPURecorder {
           if (this._unusedTextureViews.has(value.__id)) {
             const texture = this._unusedTextureViews.get(value.__id);
             this._unusedTextures.delete(texture);
+            this._unusedTextureViews.delete(value.__id);
+          }
+          this._unusedBuffers.delete(value.__id);
+          this._unusedTextures.delete(value.__id);
+        } else if (key === "buffer") {
+          const buffer = value;
+          if (this._unusedBuffers.has(buffer.__id)) {
+            this._unusedBuffers.delete(buffer.__id);
           }
         }
       } else if (method === "beginRenderPass") {
@@ -829,6 +813,32 @@ export class WebGPURecorder {
                 this._unusedTextures.delete(texture);
                 this._unusedTextureViews.delete(view.__id);
               }
+              if (this._unusedTextures.has(view.__id)) {
+                this._unusedTextures.delete(view.__id);
+              }
+            }
+            if (desc["resolveTarget"]) {
+              const view = desc["resolveTarget"];
+              if (this._unusedTextureViews.has(view.__id)) {
+                const texture = this._unusedTextureViews.get(view.__id);
+                this._unusedTextures.delete(texture);
+                this._unusedTextureViews.delete(view.__id);
+              }
+              if (this._unusedTextures.has(view.__id)) {
+                this._unusedTextures.delete(view.__id);
+              }
+            }
+          }
+        } else if (key === "depthStencilAttachment") {
+          if (value["view"]) {
+            const view = value["view"];
+            if (this._unusedTextureViews.has(view.__id)) {
+              const texture = this._unusedTextureViews.get(view.__id);
+              this._unusedTextures.delete(texture);
+              this._unusedTextureViews.delete(view.__id);
+            }
+            if (this._unusedTextures.has(view.__id)) {
+              this._unusedTextures.delete(view.__id);
             }
           }
         }
@@ -854,7 +864,7 @@ export class WebGPURecorder {
         } else {
           s += this._getDataVariable(value.__data);
         }
-      } else if (value.constructor === Array) {
+      } else if (Array.isArray(value)) {
         s += this._stringifyArray(value, toJson);
       } else if (typeof (value) === "object") {
         s += this._stringifyObject(method, value, toJson);
@@ -888,11 +898,11 @@ export class WebGPURecorder {
     const view = new Uint8Array(heap.buffer ?? heap, byteOffset, byteLength);
 
     const arrayCopy = Uint8Array.from(view);
-    this._arrayCache[index] = {
-      length: byteLength,
-      type: heap.constructor === "ArrayBuffer" ? Uint8Array : heap.constructor.name.replace(''),
-      array: arrayCopy
-    };
+    
+    const cache = this._arrayCache[index];
+    cache.length = byteLength;
+    cache.type = heap.constructor === ArrayBuffer ? "Uint8Array" : heap.constructor.name,
+    cache.array = arrayCopy;
   }
 
   _compareCacheData(a, b) {
@@ -935,9 +945,8 @@ export class WebGPURecorder {
   }
 
   _getDataCache(heap, offset, length, object, skipCompare) {
-    let self = this;
-
     let cacheIndex = -1;
+    const frameIndex = this._frameIndex ?? -1;
 
     if (!skipCompare) {
       const byteOffset = (heap.byteOffset ?? 0) + ((offset ?? 0) << this._heapAccessShiftForWebGPUHeap(heap));
@@ -946,37 +955,38 @@ export class WebGPURecorder {
       this._totalData += byteLength;
       const view = new Uint8Array(heap.buffer ?? heap, byteOffset, byteLength);
 
-      for (let ai = 0; ai < self._arrayCache.length; ++ai) {
-        const c = self._arrayCache[ai];
-        if (this._compareCacheData(this._arrayCache[ai].array, view)) {
+      for (let ai = 0; ai < this._arrayCache.length; ++ai) {
+        const c = this._arrayCache[ai];
+        if (this._compareCacheData(c.array, view)) {
           cacheIndex = ai;
           break;
         }
       }
 
       if (cacheIndex === -1) {
-        this._frameDataCount[this._frameIndex] = (this._frameDataCount[this._frameIndex] || 0) + 1;
+        this._frameDataCount[frameIndex] = (this._frameDataCount[frameIndex] || 0) + 1;
 
-        cacheIndex = self._arrayCache.length;
+        cacheIndex = this._arrayCache.length;
         const arrayCopy = Uint8Array.from(view);
-        self._arrayCache.push({
-          frame: self._frameIndex,
-          index: self._frameDataCount[self._frameIndex],
+        const cache = {
+          frame: frameIndex,
+          index: this._frameDataCount[frameIndex],
           length: byteLength,
-          type: heap.constructor === "ArrayBuffer" ? Uint8Array : heap.constructor.name,
+          type: heap.constructor === ArrayBuffer ? "Uint8Array" : heap.constructor.name,
           array: arrayCopy
-        });
+        };
+        this._arrayCache.push(cache);
       }
     } else {
-      this._frameDataCount[this._frameIndex] = (this._frameDataCount[this._frameIndex] || 0) + 1;
+      this._frameDataCount[frameIndex] = (this._frameDataCount[frameIndex] || 0) + 1;
 
-      cacheIndex = self._arrayCache.length;
+      cacheIndex = this._arrayCache.length;
       const array = heap;
-      self._arrayCache.push({
-        frame: self._frameIndex,
-        index: self._frameDataCount[self._frameIndex],
+      this._arrayCache.push({
+        frame: frameIndex,
+        index: this._frameDataCount[frameIndex],
         length,
-        type: heap.constructor === "ArrayBuffer" ? Uint8Array : heap.constructor.name,
+        type: heap.constructor === ArrayBuffer ? "Uint8Array" : heap.constructor.name,
         array
       });
     }
@@ -1009,7 +1019,8 @@ export class WebGPURecorder {
       const buffer = args[1];
       const bytesPerRow = args[2].bytesPerRow;
       const width = args[3].width || args[3][0];
-      const { blockWidth, blockHeight, bytesPerBlock } = WebGPURecorder._formatInfo[texture.format];
+      const formatInfo = WebGPURecorder._formatInfo[texture.format] || { blockWidth: 1, blockHeight: 1, bytesPerBlock: 4 };
+      const { blockWidth, blockHeight, bytesPerBlock } = formatInfo;
       const widthInBlocks = width / blockWidth;
       const rows = args[2].rowsPerImage || (args[3].height || args[3][1] || 1) / blockHeight;
       const layers = args[3].depthOrArrayLayers || args[3][2] || 1;
@@ -1038,6 +1049,10 @@ export class WebGPURecorder {
         args[2] = { __data: offsets };
         args.length = 3;
       }
+      const bindGroup = args[1];
+      if (bindGroup && bindGroup.__id && this._unusedBindGroups.has(bindGroup.__id)) {
+        this._unusedBindGroups.delete(bindGroup.__id);
+      }
     } else if (method === "createBindGroup") {
       if (args[0]["entries"]) {
         const entries = args[0]["entries"];
@@ -1048,6 +1063,8 @@ export class WebGPURecorder {
               const texture = this._unusedTextureViews.get(value.__id);
               this._unusedTextures.delete(texture);
             }
+            this._unusedTextures.delete(value.__id);
+            this._unusedBuffers.delete(value.__id);
           } else if (value && value["buffer"]) {
             const buffer = value["buffer"];
             if (this._unusedBuffers.has(buffer.__id)) {
@@ -1133,7 +1150,7 @@ export class WebGPURecorder {
         }
       } else if (a.buffer instanceof ArrayBuffer) {
         argStrings.push(this._stringifyArray([...a], toJson));
-      } else if (a.constructor === Array) {
+      } else if (Array.isArray(a)) {
         argStrings.push(this._stringifyArray(a, toJson));
       } else if (typeof (a) === "object") {
         argStrings.push(this._stringifyObject(method, a, toJson));
@@ -1193,27 +1210,10 @@ export class WebGPURecorder {
       obj = result;
     } else if (method === "writeBuffer") {
       obj = args[0];
+    } else if (method === "createBindGroup") {
+      this._unusedBindGroups.add(result.__id);
+      obj = result;
     }
-
-    // This is causing a lockup for writeBuffer commands. Look into this later.
-    /*if (this._currentFrameCommandDependencies) {
-      const commandDependencies = [this._getObjectVariable(object)];
-      for (const arg of args) {
-        if (!arg) {
-          continue;
-        } else if (arg instanceof ArrayBuffer || arg?.buffer instanceof ArrayBuffer) {
-          continue;
-        } else if (arg && arg.__id) {
-          commandDependencies.push(this._getObjectVariable(arg));
-        } else if (arg instanceof Array) {
-          this._getArrayDependencies(arg, commandDependencies);
-        } else if (arg instanceof Object) {
-          this._getObjectDependencies(arg, commandDependencies);
-        }
-      }
-
-      this._currentFrameCommandDependencies.push(commandDependencies);
-    }*/
 
     const newArgs = `[${this._stringifyArgs(method, args, true)}]`;
     const commandObj = { "object": this._getObjectVariable(object), method, "result": this._getObjectVariable(result), args: newArgs, async };
