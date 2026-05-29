@@ -1,0 +1,27 @@
+<html>
+    <body>
+        <canvas id="#webgpu" width=800 height=600></canvas>
+        <!--
+          Capture a frame, then capture another frame, then stop (recordMode 2).
+          recordFrame accepts an array of absolute frame indices. Each listed frame is captured (its
+          inputs reconstructed via readback); after the last one, recording stops. Each capture
+          downloads a separate file, auto-suffixed with the frame number:
+          test_capture_multi_12.html and test_capture_multi_40.html.
+
+          Captures can also be driven at runtime instead of (or in addition to) the array, e.g.:
+            __webgpuRecorder.recordFrame(60)        // add another target
+            __webgpuRecorder.recordNextFrame()      // capture the next frame
+          or by defining window.__recorderTest = { onFrame(i) { ... } } (see stateful_scene.js).
+        -->
+        <script id="webgpu_recorder" type="module">
+            import {WebGPURecorder} from "../webgpu_recorder.js";
+            window.__webgpuRecorder = new WebGPURecorder({
+                "recordMode": 2,
+                "recordFrame": [12, 40],
+                "continuous": false,
+                "export": "test_capture_multi"
+            });
+        </script>
+        <script src="stateful_scene.js"></script>
+    </body>
+</html>

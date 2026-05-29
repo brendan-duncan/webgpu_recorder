@@ -30,10 +30,57 @@ export class WebGPURecorder {
       messageRecording: !!options.messageRecording,
       download: options.download ?? true,
       compactCommands: !!options.compactCommands,
-      recordMode: options.recordMode ?? 0
+      recordMode: options.recordMode ?? 0,
+      // recordMode 2 (stateful) options:
+      // recordFrame: absolute rAF frame index to capture (0-based). null = wait for a trigger.
+      recordFrame: options.recordFrame ?? null,
+      // continuous: if true, keep tracking state after a capture so further triggers can
+      // capture again in the same session. Otherwise recording stops after the first capture.
+      continuous: !!options.continuous
     };
 
     this.recordSingleFrame = this.config.recordMode === 1;
+
+    // recordMode 2: stateful arbitrary-frame recording. Instead of logging every frame from the
+    // start, maintain a live model of all GPU objects (their creation commands + inter-object
+    // dependencies) and, when a target frame is reached, read back the current contents of every
+    // live resource off the GPU to build the initialize block, then record that single frame.
+    this._stateful = this.config.recordMode === 2;
+    // Number of rAF callbacks seen so far (the "frame" the user refers to). -1 before the first.
+    this._rafCount = -1;
+    // The set of absolute rAF indices still pending capture. recordFrame may be a single number or
+    // an array of numbers; runtime triggers (recordFrame/recordNextFrame) add more. Each frame is
+    // removed as it is captured.
+    this._captureTargetFrames = new Set();
+    const _rf = this.config.recordFrame;
+    if (Array.isArray(_rf)) {
+      for (const f of _rf) {
+        if (typeof f === "number") {
+          this._captureTargetFrames.add(f);
+        }
+      }
+    } else if (typeof _rf === "number") {
+      this._captureTargetFrames.add(_rf);
+    }
+    // When capturing more than one frame from config, each output file is suffixed with the frame
+    // number so the downloads don't collide.
+    this._multiCapture = this._captureTargetFrames.size > 1;
+    this._baseExportName = this.config.exportName;
+    // True only while recording the commands of the target frame itself.
+    this._isCapturingFrame = false;
+    // Live object registry: id -> { ref(WeakRef), type, seq, lines, lineObjects, commandObjs,
+    //   deps(Set<id>), destroyed, collected }.
+    this._objectRegistry = new Map();
+    // Ids in creation order; dependencies always precede their dependents.
+    this._creationOrder = [];
+    // Reverse dependency map: id -> Set<id> of objects that reference it.
+    this._dependents = new Map();
+    // Monotonic creation sequence counter.
+    this._objectSeq = 0;
+    // Frees the registry entry for a GPU object once it is garbage collected.
+    this._finalizationRegistry = (typeof FinalizationRegistry !== "undefined")
+      ? new FinalizationRegistry((id) => this._onObjectCollected(id))
+      : null;
 
     this._objectIndex = 1;
 
@@ -76,7 +123,15 @@ export class WebGPURecorder {
     this._gpuWrapper.onPostCall = this._onMethodCall.bind(this);
 
     this._registerObject(navigator.gpu);
-    this._recordLine(`${this._getObjectVariable(navigator.gpu)} = navigator.gpu;`, navigator.gpu);
+    if (this._stateful) {
+      // Seed the registry with the root gpu object so the adapter (and everything below it) has a
+      // dependency to attach to. Its assignment line is stored on its own entry.
+      const entry = this._statefulCreateEntry(navigator.gpu);
+      entry.lines.push(`${this._getObjectVariable(navigator.gpu)} = navigator.gpu;`);
+      entry.lineObjects.push(navigator.gpu);
+    } else {
+      this._recordLine(`${this._getObjectVariable(navigator.gpu)} = navigator.gpu;`, navigator.gpu);
+    }
 
     if (this.recordSingleFrame) {
       this._usedObjectIds.add(navigator.gpu.__id);
@@ -143,10 +198,8 @@ export class WebGPURecorder {
     // Wrap requestAnimationFrame so it can keep track of per-frame recording and know when
     // the maximum number of frames has been reached.
     //
-    // It would be nice to be able to arbitrarily start/stop recording. To do this,
-    // we would need to keep track of things like shader creation/deletion that can happen
-    // at arbitrary frames prior to the start, for any objects used within that recorded
-    // duration.
+    // In stateful mode (recordMode 2) the recorder maintains a live model of all GPU objects so an
+    // arbitrary frame can be captured at any time; see _statefulFrameStart / _beginFrameCapture.
     const __requestAnimationFrame = requestAnimationFrame;
     requestAnimationFrame = function (cb) {
       function callback(timestamp) {
@@ -162,6 +215,33 @@ export class WebGPURecorder {
       }
       return __requestAnimationFrame(callback);
     };
+
+    if (this._stateful) {
+      this._installCaptureTriggerListener();
+    }
+  }
+
+  // Listen for an external request to capture a frame. The message may carry a "frame" property
+  // (an absolute rAF index); if omitted, the next frame is captured. Works from both the page
+  // (CustomEvent "__WebGPURecorder") and a worker (postMessage).
+  _installCaptureTriggerListener() {
+    const recorder = this;
+    const handle = (message) => {
+      if (!message || message.action !== "webgpu_recorder_record_frame") {
+        return;
+      }
+      if (typeof message.frame === "number") {
+        recorder.recordFrame(message.frame);
+      } else {
+        recorder.recordNextFrame();
+      }
+    };
+    if (_document) {
+      window.addEventListener("__WebGPURecorder", (event) => handle(event.detail));
+    } else {
+      // Worker: listen on the global scope without clobbering existing handlers.
+      self.addEventListener("message", (event) => handle(event.data));
+    }
   }
 
   getNextId() {
@@ -182,36 +262,529 @@ export class WebGPURecorder {
 
   _frameStart(timestamp) {
     this._lastFrameTime = timestamp;
-    if (this._isRecording) {
-      this._frameIndex++;
-      this._frameVariables[this._frameIndex] = new Set();
-
-      this._currentFrameCommands = [];
-      this._currentFrameObjects = [];
-      this._currentFrameCommandObjects = [];
+    if (!this._isRecording) {
+      return;
     }
+
+    if (this._stateful) {
+      this._statefulFrameStart(timestamp);
+      return;
+    }
+
+    this._frameIndex++;
+    this._frameVariables[this._frameIndex] = new Set();
+
+    this._currentFrameCommands = [];
+    this._currentFrameObjects = [];
+    this._currentFrameCommandObjects = [];
   }
 
   _frameEnd(timestamp) {
-    if (this._isRecording) {
-      if (this._currentFrameCommands.length === 0) {
-        this._currentFrameCommands = null;
-        this._currentFrameObjects = null;
-        this._currentFrameCommandObjects = null;
-        this._frameIndex--;
-        return;
+    if (!this._isRecording) {
+      return;
+    }
+
+    if (this._stateful) {
+      this._statefulFrameEnd(timestamp);
+      return;
+    }
+
+    if (this._currentFrameCommands.length === 0) {
+      this._currentFrameCommands = null;
+      this._currentFrameObjects = null;
+      this._currentFrameCommandObjects = null;
+      this._frameIndex--;
+      return;
+    }
+
+    this._frameCommands.push(this._currentFrameCommands);
+    this._frameObjects.push(this._currentFrameObjects);
+    this._frameCommandObjects.push(this._currentFrameCommandObjects);
+
+    if (this._frameIndex === this.config.maxFrameCount) {
+      this.generateOutput();
+      this._frameIndex++;
+      return;
+    }
+  }
+
+  // ----- Stateful (recordMode 2) arbitrary-frame capture -----
+
+  // Arm the recorder to capture one or more absolute frame indices (rAF count from page load).
+  recordFrame(frameIndex) {
+    if (!this._stateful) {
+      return;
+    }
+    if (Array.isArray(frameIndex)) {
+      for (const f of frameIndex) {
+        if (typeof f === "number") {
+          this._captureTargetFrames.add(f);
+        }
       }
+      if (this._captureTargetFrames.size > 1) {
+        this._multiCapture = true;
+      }
+    } else if (typeof frameIndex === "number") {
+      this._captureTargetFrames.add(frameIndex);
+    }
+  }
 
-      this._frameCommands.push(this._currentFrameCommands);
-      this._frameObjects.push(this._currentFrameObjects);
-      this._frameCommandObjects.push(this._currentFrameCommandObjects);
+  // Arm the recorder to capture whichever frame comes next.
+  recordNextFrame() {
+    if (!this._stateful) {
+      return;
+    }
+    this._captureTargetFrames.add(this._rafCount + 1);
+  }
 
-      if (this._frameIndex === this.config.maxFrameCount) {
-        this.generateOutput();
-        this._frameIndex++;
-        return;
+  _statefulFrameStart(timestamp) {
+    this._rafCount++;
+    if (this._exporting) {
+      return; // Don't start a new capture while a previous one is still being exported.
+    }
+    if (this._captureTargetFrames.has(this._rafCount)) {
+      this._captureTargetFrames.delete(this._rafCount);
+      this._captureFrameNumber = this._rafCount;
+      this._beginFrameCapture();
+    }
+  }
+
+  _statefulFrameEnd(timestamp) {
+    if (!this._isCapturingFrame) {
+      return;
+    }
+    this._isCapturingFrame = false;
+
+    this._frameCommands.push(this._currentFrameCommands);
+    this._frameObjects.push(this._currentFrameObjects);
+    this._frameCommandObjects.push(this._currentFrameCommandObjects);
+    this._currentFrameCommands = null;
+    this._currentFrameObjects = null;
+    this._currentFrameCommandObjects = null;
+
+    // Build the initialize block from the live object registry (reachable objects in creation
+    // order) followed by the resource-content readback commands captured at frame start.
+    this._flattenStateToInit();
+
+    this._exporting = true;
+    this.generateOutput();
+  }
+
+  // At the start of the target frame (before the app's frame callback runs), snapshot the current
+  // contents of every live buffer/texture off the GPU. These become writeBuffer/writeTexture
+  // commands in the initialize block, so the captured frame replays against correct state
+  // regardless of whether that state came from host writes or earlier GPU passes.
+  _beginFrameCapture() {
+    // When capturing multiple frames from config, suffix each output file with the frame number so
+    // the downloads don't collide.
+    if (this._multiCapture) {
+      this.config.exportName = `${this._baseExportName}_${this._captureFrameNumber}`;
+    }
+
+    this._readbackCommands = [];
+    this._readbackObjects = [];
+    this._readbackCommandObjects = [];
+
+    for (const id of this._creationOrder) {
+      const entry = this._objectRegistry.get(id);
+      if (!entry || entry.destroyed || entry.collected) {
+        continue;
+      }
+      const obj = entry.ref?.deref();
+      if (!obj) {
+        continue;
+      }
+      try {
+        if (obj instanceof GPUBuffer) {
+          this._readbackBuffer(obj);
+        } else if (obj instanceof GPUTexture) {
+          this._readbackTexture(obj);
+        }
+      } catch (e) {
+        // A busy/mapped/incompatible resource can't be snapshotted; skip it rather than aborting
+        // the whole capture.
+        console.warn(`webgpu_recorder: failed to snapshot ${obj.__id}: ${e.message}`);
+        if (this._gpuWrapper.skipRecord > 0) {
+          this._gpuWrapper.skipRecord = 0;
+        }
       }
     }
+
+    this._isCapturingFrame = true;
+    this._frameIndex = 0;
+    this._frameVariables[0] = new Set();
+    this._currentFrameCommands = [];
+    this._currentFrameObjects = [];
+    this._currentFrameCommandObjects = [];
+  }
+
+  _rearmAfterCapture() {
+    // Reset the per-capture output buffers but keep the live object registry so a later trigger
+    // can capture another frame.
+    this._initializeCommands = [];
+    this._initializeObjects = [];
+    this._initializeCommandObjects = [];
+    this._frameCommands = [];
+    this._frameObjects = [];
+    this._frameCommandObjects = [];
+    this._arrayCache = [];
+    this._frameDataCount = {};
+    this._dataCacheObjects = [];
+    this._externalImageBufferPromises = [];
+    this._frameVariables = { [-1]: new Set() };
+    this._frameIndex = -1;
+    this._usedObjectIds = new Set();
+    this._readbackCommands = null;
+    this._readbackObjects = null;
+    this._readbackCommandObjects = null;
+    // Note: _captureTargetFrames is intentionally preserved (the captured frame was already removed
+    // from it); remaining entries are still pending, and runtime triggers may add more.
+    this._exporting = false;
+  }
+
+  // ----- Stateful registry helpers -----
+
+  // Create (or return the existing) registry entry for a tracked persistent GPU object.
+  _statefulCreateEntry(object) {
+    const id = object.__id;
+    let entry = this._objectRegistry.get(id);
+    if (entry) {
+      return entry;
+    }
+    entry = {
+      id,
+      ref: (typeof WeakRef !== "undefined") ? new WeakRef(object) : { deref: () => object },
+      type: object.constructor.name,
+      seq: this._objectSeq++,
+      lines: [],
+      lineObjects: [],
+      commandObjs: [],
+      deps: new Set(),
+      destroyed: false,
+      collected: false
+    };
+    this._objectRegistry.set(id, entry);
+    this._creationOrder.push(id);
+    if (this._finalizationRegistry) {
+      this._finalizationRegistry.register(object, id);
+    }
+    return entry;
+  }
+
+  // The persistent object whose registry entry should receive a command's recorded output, or null
+  // if the command is transient (and therefore reconstructed by readback at capture time).
+  _statefulRouteObject(method, object, result) {
+    if (result && result.__id !== undefined && this._isPersistentObject(result)) {
+      return result;
+    }
+    if (method === "configure" && object) {
+      return object; // GPUCanvasContext
+    }
+    return null;
+  }
+
+  _isPersistentObject(obj) {
+    if (!obj || typeof obj !== "object") {
+      return false;
+    }
+    for (const t of WebGPURecorder._persistentTypes) {
+      if (obj instanceof t) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  _isPersistentMethod(method) {
+    return WebGPURecorder._persistentMethods.has(method);
+  }
+
+  // Collect the ids of every GPU object referenced anywhere within `obj` into `outSet`.
+  _collectIds(obj, outSet, visited) {
+    if (!obj || typeof obj !== "object") {
+      return;
+    }
+    if (visited.has(obj)) {
+      return;
+    }
+    visited.add(obj);
+    if (obj.__id !== undefined) {
+      outSet.add(obj.__id);
+    }
+    for (const key in obj) {
+      const value = obj[key];
+      if (value && typeof value === "object") {
+        this._collectIds(value, outSet, visited);
+      }
+    }
+  }
+
+  // The objects a create command depends on: the receiver (e.g. the device, or the texture for
+  // createView) plus every object referenced in its arguments.
+  _extractDeps(object, args) {
+    const deps = new Set();
+    if (object && object.__id !== undefined) {
+      deps.add(object.__id);
+    }
+    const visited = new Set();
+    for (const arg of args) {
+      this._collectIds(arg, deps, visited);
+    }
+    return deps;
+  }
+
+  _addDeps(entry, newDeps) {
+    for (const dep of newDeps) {
+      if (dep === entry.id) {
+        continue;
+      }
+      entry.deps.add(dep);
+      let set = this._dependents.get(dep);
+      if (!set) {
+        set = new Set();
+        this._dependents.set(dep, set);
+      }
+      set.add(entry.id);
+    }
+  }
+
+  _statefulMarkDestroyed(id) {
+    const entry = this._objectRegistry.get(id);
+    if (entry) {
+      entry.destroyed = true;
+      this._tryPurge(id);
+    }
+  }
+
+  _onObjectCollected(id) {
+    const entry = this._objectRegistry.get(id);
+    if (entry) {
+      entry.collected = true;
+      this._tryPurge(id);
+    }
+  }
+
+  // Free a registry entry once its object is destroyed/collected AND nothing live still depends on
+  // it. Purging cascades to dependencies that may now be free.
+  _tryPurge(id) {
+    const entry = this._objectRegistry.get(id);
+    if (!entry || (!entry.destroyed && !entry.collected)) {
+      return;
+    }
+    const dependents = this._dependents.get(id);
+    if (dependents) {
+      for (const depId of dependents) {
+        if (this._objectRegistry.has(depId)) {
+          return; // A live dependent still needs this object's creation command.
+        }
+      }
+    }
+
+    this._objectRegistry.delete(id);
+    this._dependents.delete(id);
+    const orderIdx = this._creationOrder.indexOf(id);
+    if (orderIdx !== -1) {
+      this._creationOrder.splice(orderIdx, 1);
+    }
+    this._removeVariable(id);
+
+    // This object no longer references its dependencies; some may now be purgeable.
+    for (const depId of entry.deps) {
+      const set = this._dependents.get(depId);
+      if (set) {
+        set.delete(id);
+      }
+      this._tryPurge(depId);
+    }
+  }
+
+  _statefulDeviceRef() {
+    const ref = this._statefulDevice;
+    const device = ref?.deref ? ref.deref() : ref;
+    return device || null;
+  }
+
+  // Snapshot a buffer's current contents by copying it into a mappable staging buffer, then emit a
+  // writeBuffer command (filled asynchronously when the map resolves).
+  _readbackBuffer(buffer) {
+    const size = buffer.size;
+    if (!size) {
+      return;
+    }
+    if (!(buffer.usage & GPUBufferUsage.COPY_SRC)) {
+      console.warn(`webgpu_recorder: cannot snapshot buffer ${buffer.__id} (no COPY_SRC usage); its contents will be uninitialized in the recording.`);
+      return;
+    }
+    const device = this._statefulDeviceRef();
+    if (!device) {
+      return;
+    }
+    const self = this;
+
+    this._gpuWrapper.skipRecord++;
+    const staging = device.createBuffer({ size, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+    const enc = device.createCommandEncoder();
+    enc.copyBufferToBuffer(buffer, 0, staging, 0, size);
+    device.queue.submit([enc.finish()]);
+    this._gpuWrapper.skipRecord--;
+
+    const bytes = new Uint8Array(size);
+    const cacheIndex = this._getDataCache(bytes, 0, size, null, true);
+    const queueVar = this._getObjectVariable(device.queue);
+    const bufVar = this._getObjectVariable(buffer);
+
+    this._readbackCommands.push(`${queueVar}.writeBuffer(${bufVar}, 0, ${this._getDataVariable(cacheIndex)});`);
+    this._readbackObjects.push(buffer);
+    this._readbackCommandObjects.push({ object: queueVar, method: "writeBuffer", result: undefined, args: `[{ "__id": "${bufVar}" }, 0, { "__data": ${cacheIndex} }]`, async: "" });
+
+    const promise = new Promise((resolve) => {
+      self._gpuWrapper.skipRecord++;
+      staging.mapAsync(GPUMapMode.READ).then(() => {
+        self._gpuWrapper.skipRecord++;
+        const range = staging.getMappedRange();
+        const data = new Uint8Array(range);
+        self._replaceDataCache(cacheIndex, data, 0, data.length);
+        staging.unmap();
+        staging.destroy();
+        self._gpuWrapper.skipRecord--;
+        resolve();
+      });
+      self._gpuWrapper.skipRecord--;
+    });
+    this._externalImageBufferPromises.push(promise);
+  }
+
+  // Snapshot a texture's current contents, one mip level at a time, by copying to a staging buffer
+  // and emitting writeTexture commands.
+  _readbackTexture(texture) {
+    const format = texture.format;
+    const info = WebGPURecorder._formatInfo[format];
+    if (texture.sampleCount > 1 || !info || !info.bytesPerBlock || format.indexOf("depth") !== -1 || format.indexOf("stencil") !== -1) {
+      console.warn(`webgpu_recorder: cannot snapshot texture ${texture.__id} (format ${format}, sampleCount ${texture.sampleCount}); its contents will be uninitialized in the recording.`);
+      return;
+    }
+    const device = this._statefulDeviceRef();
+    if (!device) {
+      return;
+    }
+    const self = this;
+    const { blockWidth, blockHeight, bytesPerBlock } = info;
+    const queueVar = this._getObjectVariable(device.queue);
+    const texVar = this._getObjectVariable(texture);
+    const dim = texture.dimension;
+    const arrayLayers = texture.depthOrArrayLayers;
+
+    for (let mip = 0; mip < texture.mipLevelCount; ++mip) {
+      const w = Math.max(1, texture.width >> mip);
+      const h = Math.max(1, texture.height >> mip);
+      const d = (dim === "3d") ? Math.max(1, arrayLayers >> mip) : arrayLayers;
+      const widthInBlocks = Math.ceil(w / blockWidth);
+      const heightInBlocks = Math.ceil(h / blockHeight);
+      const bytesPerRow = (widthInBlocks * bytesPerBlock + 255) & ~0xff;
+      const rowsPerImage = heightInBlocks;
+      const size = bytesPerRow * rowsPerImage * d;
+      if (!size) {
+        continue;
+      }
+
+      this._gpuWrapper.skipRecord++;
+      const staging = device.createBuffer({ size, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+      const enc = device.createCommandEncoder();
+      enc.copyTextureToBuffer({ texture, mipLevel: mip }, { buffer: staging, bytesPerRow, rowsPerImage }, [w, h, d]);
+      device.queue.submit([enc.finish()]);
+      this._gpuWrapper.skipRecord--;
+
+      const bytes = new Uint8Array(size);
+      const cacheIndex = this._getDataCache(bytes, 0, size, null, true);
+
+      this._readbackCommands.push(`${queueVar}.writeTexture({texture: ${texVar}, mipLevel: ${mip}}, ${this._getDataVariable(cacheIndex)}, {offset: 0, bytesPerRow: ${bytesPerRow}, rowsPerImage: ${rowsPerImage}}, [${w}, ${h}, ${d}]);`);
+      this._readbackObjects.push(texture);
+      this._readbackCommandObjects.push({ object: queueVar, method: "writeTexture", result: undefined, args: `[{ "texture": { "__id": "${texVar}" }, "mipLevel": ${mip} }, { "__data": ${cacheIndex} }, { "offset": 0, "bytesPerRow": ${bytesPerRow}, "rowsPerImage": ${rowsPerImage} }, [${w}, ${h}, ${d}]]`, async: "" });
+
+      const promise = new Promise((resolve) => {
+        self._gpuWrapper.skipRecord++;
+        staging.mapAsync(GPUMapMode.READ).then(() => {
+          self._gpuWrapper.skipRecord++;
+          const range = staging.getMappedRange();
+          const data = new Uint8Array(range);
+          self._replaceDataCache(cacheIndex, data, 0, data.length);
+          staging.unmap();
+          staging.destroy();
+          self._gpuWrapper.skipRecord--;
+          resolve();
+        });
+        self._gpuWrapper.skipRecord--;
+      });
+      this._externalImageBufferPromises.push(promise);
+    }
+  }
+
+  // Build the initialize command block: the creation commands of every live object reachable from
+  // the captured frame (in creation order), followed by the resource-content readback commands.
+  _flattenStateToInit() {
+    const reachable = new Set();
+    const stack = [...this._usedObjectIds];
+    const device = this._statefulDeviceRef();
+    if (device) {
+      stack.push(device.__id, device.queue.__id);
+    }
+    while (stack.length) {
+      const id = stack.pop();
+      if (reachable.has(id)) {
+        continue;
+      }
+      const entry = this._objectRegistry.get(id);
+      if (!entry) {
+        continue; // transient object (e.g. an encoder created within the captured frame)
+      }
+      reachable.add(id);
+      for (const dep of entry.deps) {
+        if (!reachable.has(dep)) {
+          stack.push(dep);
+        }
+      }
+    }
+
+    const initCommands = [];
+    const initObjects = [];
+    const initCommandObjects = [];
+    const declared = new Set();
+    for (const id of this._creationOrder) {
+      if (!reachable.has(id)) {
+        continue;
+      }
+      const entry = this._objectRegistry.get(id);
+      if (!entry) {
+        continue;
+      }
+      if (entry.type !== "GPUCanvasContext") {
+        declared.add(id); // The canvas context uses the fixed variable name "context".
+      }
+      for (let i = 0; i < entry.lines.length; ++i) {
+        initCommands.push(entry.lines[i]);
+        initObjects.push(entry.lineObjects[i]);
+      }
+      for (const co of entry.commandObjs) {
+        initCommandObjects.push(co);
+      }
+    }
+
+    // Append resource-content readback for the reachable resources only.
+    const readbackCount = this._readbackCommands ? this._readbackCommands.length : 0;
+    for (let i = 0; i < readbackCount; ++i) {
+      const obj = this._readbackObjects[i];
+      if (obj && obj.__id !== undefined && !reachable.has(obj.__id)) {
+        continue;
+      }
+      initCommands.push(this._readbackCommands[i]);
+      initObjects.push(this._readbackObjects[i]);
+      initCommandObjects.push(this._readbackCommandObjects[i]);
+    }
+
+    this._initializeCommands = initCommands;
+    this._initializeObjects = initObjects;
+    this._initializeCommandObjects = initCommandObjects;
+    this._frameVariables[-1] = declared;
   }
 
   _removeUnusedCommands(objects, commands, unusedObjects, removeValue) {
@@ -362,9 +935,15 @@ export class WebGPURecorder {
 
   generateOutput() {
     const unusedObjects = new Set();
-    this._isRecording = false;
+    // In continuous stateful mode, or while more target frames are still pending, keep recording so
+    // the live object registry stays current for the next capture; otherwise stop after this output.
+    if (!(this._stateful && (this.config.continuous || this._captureTargetFrames.size > 0))) {
+      this._isRecording = false;
+    }
 
-    this._recordingStatus.style.backgroundColor = "#f00";
+    if (this._recordingStatus) {
+      this._recordingStatus.style.backgroundColor = "#f00";
+    }
 
     if (this.recordSingleFrame) {
       const lastFrameIndex = this._frameCommands.length - 1;
@@ -537,6 +1116,19 @@ export class WebGPURecorder {
         </html>\n`;
 
         self._downloadFile(s, (self.config.exportName || "WebGpuRecord") + ".html");
+
+        if (self._stateful) {
+          if (self.config.continuous || self._captureTargetFrames.size > 0) {
+            // Reset per-capture buffers but keep the live registry so the next pending/triggered
+            // frame can be captured.
+            self._rearmAfterCapture();
+            if (self._recordingStatus) {
+              self._recordingStatus.style.backgroundColor = "#0f0";
+            }
+          } else {
+            self._exporting = false;
+          }
+        }
       });
     });
   }
@@ -723,7 +1315,23 @@ export class WebGPURecorder {
   }
 
   _wrapContext(ctx) {
-    this._recordLine(`${this._getObjectVariable(ctx)} = canvas.getContext("webgpu");`, null);
+    const line = `${this._getObjectVariable(ctx)} = canvas.getContext("webgpu");`;
+    if (this._stateful) {
+      // Track the canvas context as a persistent object so it (and its configure state) is
+      // reconstructed when an arbitrary frame is captured. _getObjectVariable returns the fixed
+      // name "context" for a context without assigning it an id, so register it explicitly to key
+      // the registry entry.
+      if (ctx.__id === undefined) {
+        this._registerObject(ctx);
+      }
+      const entry = this._statefulCreateEntry(ctx);
+      if (entry.lines.length === 0) {
+        entry.lines.push(line);
+        entry.lineObjects.push(null);
+      }
+      return;
+    }
+    this._recordLine(line, null);
   }
 
   _onAsyncResolve(object, method, args, id, result) {
@@ -736,6 +1344,16 @@ export class WebGPURecorder {
         this._recordCommand(true, navigator.gpu, "requestAdapter", adapter, []);
       }
       result.queue.__device = result; // Add a reference to the device on the queue object.
+      if (this._stateful) {
+        // Remember a device so resource contents can be read back at capture time.
+        this._statefulDevice = (typeof WeakRef !== "undefined") ? new WeakRef(result) : result;
+      }
+    }
+
+    // In stateful mode before the captured frame, only persistent object/state commands are
+    // tracked; transient commands are reconstructed by readback at capture time.
+    if (this._stateful && !this._isCapturingFrame && !this._isPersistentMethod(method)) {
+      return;
     }
 
     this._recordCommand(true, object, method, result, args);
@@ -749,24 +1367,43 @@ export class WebGPURecorder {
     // outside the scope of what WebGPU is in control of. So we keep track of all the
     // mapped buffer ranges, and when unmap is called, we record the content of their data
     // so that they have their correct data for the unmap.
+    // In stateful mode, host writes and per-frame transient commands made before the captured
+    // frame are not logged: the resource-content readback at capture time reconstructs the data,
+    // and per-frame state is re-established by the captured frame itself.
+    const statefulPreCapture = this._stateful && !this._isCapturingFrame;
+
     if (method === "unmap") {
       if (object.__mappedRanges) {
-        for (const buffer of object.__mappedRanges) {
-          // Make a copy of the mappedRange buffer data as it is when unmap
-          // is called.
-          const cacheIndex = this._getDataCache(buffer, 0, buffer.byteLength, buffer);
-          // Set the mappedRange buffer data in the recording to what is in the buffer
-          // at the time unmap is called.
-          this._recordLine(`new Uint8Array(${this._getObjectVariable(buffer)}).set(${this._getDataVariable(cacheIndex)});`, object);
-          this._recordCommand("", buffer, "__writeData", null, [cacheIndex], true);
+        if (!statefulPreCapture) {
+          for (const buffer of object.__mappedRanges) {
+            // Make a copy of the mappedRange buffer data as it is when unmap
+            // is called.
+            const cacheIndex = this._getDataCache(buffer, 0, buffer.byteLength, buffer);
+            // Set the mappedRange buffer data in the recording to what is in the buffer
+            // at the time unmap is called.
+            this._recordLine(`new Uint8Array(${this._getObjectVariable(buffer)}).set(${this._getDataVariable(cacheIndex)});`, object);
+            this._recordCommand("", buffer, "__writeData", null, [cacheIndex], true);
+          }
         }
         delete object.__mappedRanges;
       }
     } else if (method === "getCurrentTexture") {
-      this._recordLine(`setCanvasSize(${this._getObjectVariable(object)}.canvas, ${object.canvas.width}, ${object.canvas.height})`, object);
-      this._recordCommand("", object, "__setCanvasSize", null, [object.canvas.width, object.canvas.height], true);
+      if (!statefulPreCapture) {
+        this._recordLine(`setCanvasSize(${this._getObjectVariable(object)}.canvas, ${object.canvas.width}, ${object.canvas.height})`, object);
+        this._recordCommand("", object, "__setCanvasSize", null, [object.canvas.width, object.canvas.height], true);
+      }
     } else if (method === "createTexture") {
       args[0].usage |= GPUTextureUsage.COPY_SRC;
+    } else if (method === "createBuffer") {
+      // For stateful capture, force COPY_SRC so the buffer's contents can be read back at capture
+      // time. MAP_READ may only be combined with COPY_DST, so those buffers can't be made readable
+      // this way (MAP_READ staging buffers never hold persistent render state worth reconstructing).
+      if (this._stateful) {
+        const usage = args[0]?.usage ?? 0;
+        if (!(usage & GPUBufferUsage.MAP_READ)) {
+          args[0].usage = usage | GPUBufferUsage.COPY_SRC;
+        }
+      }
     }
   }
 
@@ -779,6 +1416,18 @@ export class WebGPURecorder {
       this._unusedBuffers.delete(object.__id);
       this._unusedTextures.delete(object.__id);
       this._unusedBindGroups.delete(object.__id);
+      if (this._stateful && object.__id !== undefined) {
+        this._statefulMarkDestroyed(object.__id);
+      }
+    }
+
+    // In stateful mode before the captured frame, only persistent object/state commands update the
+    // registry; transient and data-write commands are reconstructed by readback at capture time.
+    if (this._stateful && !this._isCapturingFrame) {
+      if (this._isPersistentMethod(method)) {
+        this._recordCommand(false, object, method, result, args);
+      }
+      return;
     }
 
     if (method === "copyExternalImageToTexture") {
@@ -1291,7 +1940,7 @@ export class WebGPURecorder {
       }
     }
 
-    if (this.recordSingleFrame) {
+    if (this.recordSingleFrame || (this._stateful && this._isCapturingFrame)) {
       if (object && object.__id) {
         this._usedObjectIds.add(object.__id);
       }
@@ -1306,6 +1955,34 @@ export class WebGPURecorder {
         }
       }
     }
+
+    // Stateful pre-capture: redirect this command's recorded output onto the owning object's
+    // registry entry (instead of the flat initialize log) by temporarily swapping the init arrays.
+    let _savedInit = null;
+    if (this._stateful && !this._isCapturingFrame) {
+      const routeObject = this._statefulRouteObject(method, object, result);
+      if (!routeObject) {
+        return; // Transient/data command: reconstructed by readback at capture time.
+      }
+      const entry = this._statefulCreateEntry(routeObject);
+      this._addDeps(entry, this._extractDeps(object, args));
+      if (method === "configure") {
+        // The context is created (getContext) before the device, but configure() references the
+        // device. Move the context to the end of the creation order so its commands (getContext +
+        // configure) are emitted after the device it depends on.
+        const idx = this._creationOrder.indexOf(routeObject.__id);
+        if (idx !== -1) {
+          this._creationOrder.splice(idx, 1);
+          this._creationOrder.push(routeObject.__id);
+        }
+      }
+      _savedInit = [this._initializeCommands, this._initializeObjects, this._initializeCommandObjects];
+      this._initializeCommands = entry.lines;
+      this._initializeObjects = entry.lineObjects;
+      this._initializeCommandObjects = entry.commandObjs;
+    }
+
+    try {
 
     async = async ? "await " : "";
 
@@ -1384,6 +2061,14 @@ export class WebGPURecorder {
         this._recordCommand("", result, "__getQueue", q, [], true);
       }
     }
+
+    } finally {
+      if (_savedInit) {
+        this._initializeCommands = _savedInit[0];
+        this._initializeObjects = _savedInit[1];
+        this._initializeCommandObjects = _savedInit[2];
+      }
+    }
   }
 }
 
@@ -1394,6 +2079,48 @@ WebGPURecorder._asyncMethods = new Set([
   "createRenderPipelineAsync",
   "mapAsync",
 ]);
+
+// Stateful mode (recordMode 2): methods that create/define a persistent GPU object or persistent
+// state, which must be reconstructed in the initialize block of an arbitrary-frame capture.
+WebGPURecorder._persistentMethods = new Set([
+  "requestAdapter",
+  "requestDevice",
+  "__getQueue",
+  "createBuffer",
+  "createTexture",
+  "createView",
+  "createSampler",
+  "createBindGroupLayout",
+  "createPipelineLayout",
+  "createBindGroup",
+  "createShaderModule",
+  "createComputePipeline",
+  "createRenderPipeline",
+  "createComputePipelineAsync",
+  "createRenderPipelineAsync",
+  "createQuerySet",
+  "getBindGroupLayout",
+  "configure"
+]);
+
+// Stateful mode: object types whose lifetime spans frames (as opposed to transient per-frame
+// objects like command encoders, passes, command buffers and render bundles).
+WebGPURecorder._persistentTypes = [
+  GPUAdapter,
+  GPUDevice,
+  GPUQueue,
+  GPUBuffer,
+  GPUTexture,
+  GPUTextureView,
+  GPUSampler,
+  GPUBindGroupLayout,
+  GPUBindGroup,
+  GPUPipelineLayout,
+  GPUShaderModule,
+  GPUComputePipeline,
+  GPURenderPipeline,
+  GPUQuerySet
+];
 
 WebGPURecorder._skipMethods = new Set([
   "toString",
@@ -1822,12 +2549,18 @@ Worker = new Proxy(Worker, {
       const messageRecording = self._webgpu_recorder_init.messageRecording;;
       const removeUnusedResources = self._webgpu_recorder_init.removeUnusedResources;
       const download = self._webgpu_recorder_init.download;
+      const recordMode = self._webgpu_recorder_init.recordMode;
+      const recordFrame = self._webgpu_recorder_init.recordFrame;
+      const continuous = self._webgpu_recorder_init.continuous;
       const webgpuRecorderConfig = {
           "frames": frames || 1,
           "export": filename,
           "removeUnusedResources": !!removeUnusedResources,
           "messageRecording": !!messageRecording,
-          "download": download === null ? true : download === "false" ? false : download === "true" ? true : download
+          "download": download === null ? true : download === "false" ? false : download === "true" ? true : download,
+          "recordMode": recordMode ?? 0,
+          "recordFrame": recordFrame ?? null,
+          "continuous": !!continuous
       }
       src = src.replaceAll(`<%=webgpuRecorderConfig%>`, JSON.stringify(webgpuRecorderConfig));
     }
@@ -1927,12 +2660,21 @@ export let __webgpuRecorder = null;
       const messageRecording = script.getAttribute("messageRecording");
       const removeUnusedResources = script.getAttribute("removeUnusedResources");
       const download = script.getAttribute("download");
+      const recordMode = script.getAttribute("recordMode");
+      const recordFrame = script.getAttribute("recordFrame");
+      const continuous = script.getAttribute("continuous");
       webgpuRecorderConfig = {
         "frames": frames || 1,
         "export": filename,
         "removeUnusedResources": !!removeUnusedResources,
         "messageRecording": !!messageRecording,
-        "download": download === null ? true : download === "false" ? false : download === "true" ? true : download
+        "download": download === null ? true : download === "false" ? false : download === "true" ? true : download,
+        "recordMode": recordMode === null ? 0 : parseInt(recordMode, 10) || 0,
+        "recordFrame": recordFrame === null ? null
+          : recordFrame.indexOf(",") !== -1
+            ? recordFrame.split(",").map((s) => parseInt(s.trim(), 10)).filter((n) => !isNaN(n))
+            : parseInt(recordFrame, 10),
+        "continuous": continuous !== null
       }
     }
   }

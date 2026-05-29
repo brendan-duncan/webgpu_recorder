@@ -75,6 +75,76 @@ Where
 * **export**: the name of the generated HTML file, as ${export}.html
 * **removeUnusedResources**: if true, resource commands not needed for rendering are removed, otherwise all commands are recorded.
 * **download**: if true, the html will be downloaded.
+* **recordMode**: how the recorder captures frames (default `0`):
+    * `0` — record every command from the first frame through `frames` frames.
+    * `1` — record only the last of `frames` frames.
+    * `2` — **stateful arbitrary-frame capture** (see below).
+
+## Recording an Arbitrary Frame (recordMode 2)
+
+`recordMode: 2` lets you capture a single, arbitrary frame at any point in a long-running
+application — for example frame 500 of a game — without recording everything from the start.
+
+Instead of logging every command from frame 0, the recorder maintains a live model of all GPU
+objects: how each was created and which other objects it depends on. Objects are tracked across
+their whole lifetime, and freed from the recorder's cache when they are destroyed (explicitly via
+`destroy()` or through garbage collection), so memory stays bounded during long sessions. An
+object is only freed once nothing still alive depends on it.
+
+When the target frame is reached, the recorder reads back the current contents of every live
+buffer and texture directly off the GPU and turns them into `writeBuffer`/`writeTexture` commands
+in the recording's initialize block. This captures the correct state regardless of how it was
+produced — whether by host writes (`writeBuffer`/`writeTexture`/mapped writes) in earlier frames,
+or by GPU compute/render passes. Only the objects (and data) actually used by the captured frame
+are included; everything else is discarded.
+
+```javascript
+new WebGPURecorder({
+    "recordMode": 2,
+    "recordFrame": 500,    // capture frame 500 (rAF count from page load); omit to trigger later
+    "continuous": false,   // if true, keep tracking so further triggers can capture again
+    "export": "WebGPURecord"
+});
+```
+
+* **recordFrame**: the absolute frame index (count of `requestAnimationFrame` callbacks since page
+  load) to capture. May also be an **array** of indices to capture several frames in one session,
+  e.g. `"recordFrame": [8, 20, 500]`. When more than one frame is captured, each downloaded file is
+  suffixed with its frame number (`${export}_8.html`, `${export}_20.html`, ...). Recording stops
+  after the last listed frame (unless `continuous` is `true`). If omitted, the recorder tracks state
+  and waits for a runtime trigger.
+* **continuous**: if `true`, the recorder keeps tracking state after a capture so it can capture
+  again later in the same session. If `false` (default), recording stops after the last captured
+  frame.
+
+### Triggering a capture at runtime
+
+In addition to `recordFrame`, a capture can be requested at runtime three ways:
+
+```javascript
+// 1. From code / the console, via the exported recorder instance:
+__webgpuRecorder.recordNextFrame();      // capture whichever frame comes next
+__webgpuRecorder.recordFrame(500);       // capture an absolute frame index
+__webgpuRecorder.recordFrame([8, 20]);   // queue several frames to capture
+
+// 2. By dispatching an event (from the page or an extension):
+window.dispatchEvent(new CustomEvent("__WebGPURecorder", { detail: {
+    action: "webgpu_recorder_record_frame",
+    frame: 500   // omit "frame" to capture the next frame
+} }));
+```
+
+From a worker, post the same `{ action: "webgpu_recorder_record_frame", frame }` message to the
+worker.
+
+### Limitations of arbitrary-frame capture
+
+* Resources whose contents cannot be read back are skipped (with a console warning) and will be
+  uninitialized in the recording: multisampled textures, depth/stencil textures, formats that
+  cannot be copied to a buffer, and `MAP_READ` staging buffers.
+* Non-mappable buffers have `COPY_SRC` added to their usage automatically so they can be read back.
+* Render bundles and objects created *during* the captured frame are not added to the live state
+  model for subsequent `continuous` captures.
 
 ## Recording From a Web Worker
 

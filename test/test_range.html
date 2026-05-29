@@ -1,0 +1,19 @@
+<html>
+    <body>
+        <canvas id="#webgpu" width=800 height=600></canvas>
+        <!--
+          Frame-range capture (recordMode 0, the original behavior).
+          Records every command from the first frame through 8 frames, then downloads test_range.html.
+          The recorder is manually injected/constructed here (not via the inspector auto-inject).
+        -->
+        <script id="webgpu_recorder" type="module">
+            import {WebGPURecorder} from "../webgpu_recorder.js";
+            window.__webgpuRecorder = new WebGPURecorder({
+                "recordMode": 0,
+                "frames": 8,
+                "export": "test_range"
+            });
+        </script>
+        <script src="stateful_scene.js"></script>
+    </body>
+</html>

@@ -1,0 +1,21 @@
+<html>
+    <body>
+        <canvas id="#webgpu" width=800 height=600></canvas>
+        <!--
+          Capture a specific frame and stop (recordMode 2, continuous: false).
+          The first 20 frames run normally while the recorder tracks live GPU state; frame 20 is
+          captured (its inputs reconstructed via readback) and recording stops. Downloads
+          test_capture_frame.html.
+        -->
+        <script id="webgpu_recorder" type="module">
+            import {WebGPURecorder} from "../webgpu_recorder.js";
+            window.__webgpuRecorder = new WebGPURecorder({
+                "recordMode": 2,
+                "recordFrame": 20,
+                "continuous": false,
+                "export": "test_capture_frame"
+            });
+        </script>
+        <script src="stateful_scene.js"></script>
+    </body>
+</html>
