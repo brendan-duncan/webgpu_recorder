@@ -255,3 +255,95 @@ All buffer and texture data is stored in the recording. The recording stores the
 External textures in WebGPU can't be captured. _copyExternalImageToTexture_ will get converted to _writeTexture_ in the recording, with the external image data getting converted to raw data.
 
 External video textures can't currently be recorded.
+
+## Binary Recording Format (`.wgpu`)
+
+A `.wgpu` file (produced with `output: "binary"` / `"both"`) is a small JSON header describing the
+command stream followed by a raw data section holding all buffer/texture bytes. All multi-byte
+integers are **little-endian**.
+
+### Container layout
+
+| Offset | Size | Field | Description |
+| --- | --- | --- | --- |
+| 0 | 4 | `magic` | The ASCII bytes `"WGPR"` (`0x57 0x47 0x50 0x52`). |
+| 4 | 4 | `version` | `uint32`. Format version (currently `1`). |
+| 8 | 4 | `headerByteLength` | `uint32`. Byte length of the header JSON. |
+| 12 | `headerByteLength` | `header` | UTF-8 encoded JSON (see below). |
+| 12 + `headerByteLength` | rest of file | `dataSection` | Raw, concatenated buffer/texture bytes. |
+
+### Header JSON
+
+```jsonc
+{
+  "version": 1,
+  "canvasWidth": 800,
+  "canvasHeight": 600,
+  "gpuVar": "x",            // variable name bound to navigator.gpu
+  "contextVar": "context",  // variable name bound to the canvas WebGPU context
+  "init":   [ <command>, ... ],       // setup commands, run once
+  "frames": [ [ <command>, ... ], ... ], // per-frame command lists
+  "data":   [ <dataEntry>, ... ]      // indexed by data-blob index
+}
+```
+
+* **`gpuVar` / `contextVar`** — the player pre-binds these variable names to `navigator.gpu` and
+  the live `canvas.getContext("webgpu")` before replaying.
+* **`init`** — commands that create persistent resources (adapter/device/pipelines/buffers/…) and
+  upload their data. A player runs these once.
+* **`frames`** — one command list per recorded frame. For a single-frame capture (`recordMode` 1/2)
+  there is exactly one list.
+
+### Command object
+
+Each command in `init` / `frames` is:
+
+```jsonc
+{
+  "object": "xDevice",   // variable name of the receiver object, or null
+  "method": "createBuffer",
+  "result": "xBuffer",   // variable name to bind the return value to, or "" / omitted
+  "args":   "[ {\"size\":64,\"usage\":140} ]", // JSON string (see argument encoding)
+  "async":  ""           // "await " if the call is asynchronous, otherwise ""
+}
+```
+
+`args` is itself a JSON string (parsed by the player). Within it, references are encoded as:
+
+* `{ "__id": "xBuffer" }` — a reference to a previously created object (resolved to the live object
+  bound to that variable name).
+* `{ "__data": N }` — a reference to data-blob index `N` in the `data` table (resolved to a
+  TypedArray over the corresponding bytes in `dataSection`).
+
+All other values are literal JSON (numbers, strings, arrays, descriptor objects). Shader source is
+stored as a normal JSON string.
+
+#### Pseudo-methods
+
+Some commands use synthetic method names the player implements specially rather than as direct
+WebGPU calls:
+
+| Method | Meaning |
+| --- | --- |
+| `requestAdapter` / `requestDevice` | Bind the player's once-created adapter/device. `requestDevice`'s `args` are intentionally **not** valid JSON (they reference the generated `requiredFeatures`/`requiredLimits` and are ignored). |
+| `__getQueue` | Bind `device.queue` to the result variable. |
+| `__setCanvasSize` | `args` are `[width, height]`; resize the canvas. |
+| `__writeData` | Write captured bytes into a mapped buffer range. `args` is `[dataIndex]` — a **raw** data-blob index (not a `{ "__data": N }` marker). |
+| `__writeTexture` | Equivalent to `queue.writeTexture(...)` (used for the `copyExternalImageToTexture` → `writeTexture` conversion). |
+
+### Data table entry
+
+```jsonc
+{ "type": "Float32Array", "length": 64, "offset": 0 }
+```
+
+* **`type`** — the TypedArray constructor name (`"Uint8Array"`, `"Uint32Array"`, `"Float32Array"`,
+  …). The player reconstructs a TypedArray of this type over the bytes.
+* **`length`** — byte length of the blob.
+* **`offset`** — byte offset of the blob within `dataSection`.
+
+Unused/purged slots are stored as `{ "type": "", "length": 0, "offset": 0 }` to keep indices stable;
+they are never referenced by a `{ "__data": N }`.
+
+`webgpu_player.js` exports `parseWebGPURecording(arrayBuffer)`, which returns
+`{ version, header, dataBytes }`, and the `WebGPUPlayer` class that interprets the format.
