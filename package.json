@@ -16,6 +16,7 @@
   "sideEffects": false,
   "files": [
     "webgpu_recorder.js",
+    "webgpu_player.js",
     "LICENSE.md",
     "package.json",
     "README.md"
@@ -38,7 +39,8 @@
       "package.json",
       "LICENSE.md",
       "README.md",
-      "webgpu_recorder.js"
+      "webgpu_recorder.js",
+      "webgpu_player.js"
     ]
   }
 }

@@ -1,0 +1,90 @@
+<html>
+    <head>
+        <meta charset="utf-8">
+        <title>WebGPU Recording - Play All Frames</title>
+        <style>
+            body { font-family: sans-serif; margin: 10px; }
+            #controls > * { margin-right: 6px; }
+            #frameLabel { display: inline-block; min-width: 220px; font-family: monospace; }
+            canvas { display: block; margin-top: 8px; border: 1px solid #000; }
+        </style>
+    </head>
+    <body>
+        <h3>WebGPU Recording &mdash; Play All Frames</h3>
+        <p>Load a <code>.wgpu</code> recording (webgpu_recorder.js with <code>output: "binary"</code>).
+           All frames are played back in a loop.</p>
+        <div id="controls">
+            <input type="file" id="file" accept=".wgpu">
+            <label><input type="checkbox" id="loop" checked> loop</label>
+            <button id="stop" disabled>Stop</button>
+            <span id="frameLabel"></span>
+        </div>
+        <canvas id="#webgpu" width=800 height=600></canvas>
+
+        <script type="module">
+            import { WebGPUPlayer } from "../webgpu_player.js";
+
+            const canvas = document.getElementById("#webgpu");
+            const frameLabel = document.getElementById("frameLabel");
+            const loopEl = document.getElementById("loop");
+            const stopBtn = document.getElementById("stop");
+
+            let player = null;
+            let frame = 0;
+            let frameCount = 0;
+            let running = false;
+            let t0 = 0;
+
+            document.getElementById("file").addEventListener("change", async (ev) => {
+                const f = ev.target.files[0];
+                if (!f) { return; }
+                const buffer = await f.arrayBuffer();
+                try {
+                    player = new WebGPUPlayer(buffer);
+                    await player.load(canvas);
+                    await player.resetForPlayback();
+                } catch (e) {
+                    frameLabel.textContent = "Error: " + e.message;
+                    console.error(e);
+                    return;
+                }
+                frameCount = player.getFrameCount();
+                frame = 0;
+                running = true;
+                stopBtn.disabled = false;
+                t0 = performance.now();
+                requestAnimationFrame(renderLoop);
+            });
+
+            stopBtn.addEventListener("click", () => { running = false; });
+
+            async function renderLoop() {
+                if (!running || !player) { return; }
+
+                if (frame >= frameCount) {
+                    if (loopEl.checked && frameCount > 0) {
+                        frame = 0;
+                        await player.resetForPlayback();
+                    } else {
+                        running = false;
+                        frameLabel.textContent += "  (done)";
+                        return;
+                    }
+                }
+
+                const t1 = performance.now();
+                frameLabel.textContent = `Frame ${frame + 1}/${frameCount}   ${(t1 - t0).toFixed(1)} ms`;
+                t0 = t1;
+
+                try {
+                    await player.renderFrame(frame);
+                } catch (e) {
+                    console.error("Error in frame", frame, e);
+                }
+                frame++;
+
+                requestAnimationFrame(renderLoop);
+            }
+        </script>
+    </body>
+</html>

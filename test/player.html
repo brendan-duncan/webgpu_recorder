@@ -1,0 +1,105 @@
+<html>
+    <head>
+        <meta charset="utf-8">
+        <title>WebGPU Recording Player</title>
+        <style>
+            body { font-family: sans-serif; margin: 10px; }
+            #controls { margin-bottom: 8px; }
+            #controls > * { margin-right: 6px; }
+            #log { width: 800px; height: 180px; font-family: monospace; font-size: 12px; white-space: pre; overflow: auto; border: 1px solid #ccc; padding: 4px; }
+            canvas { border: 1px solid #000; }
+        </style>
+    </head>
+    <body>
+        <h3>WebGPU Recording Player</h3>
+        <p>Load a <code>.wgpu</code> recording produced by webgpu_recorder.js with <code>output: "binary"</code>.</p>
+        <div id="controls">
+            <input type="file" id="file" accept=".wgpu">
+            <button id="playAll" disabled>Play all</button>
+            <button id="stepBack" disabled>&laquo; Step</button>
+            <button id="stepFwd" disabled>Step &raquo;</button>
+            <label>command <input type="number" id="cmdIndex" value="0" min="0" style="width:80px" disabled></label>
+            <button id="execTo" disabled>Execute to command</button>
+            <button id="info" disabled>Command info</button>
+        </div>
+        <canvas id="#webgpu" width=800 height=600></canvas>
+        <div id="log"></div>
+
+        <script type="module">
+            import { WebGPUPlayer } from "../webgpu_player.js";
+
+            const canvas = document.getElementById("#webgpu");
+            const logEl = document.getElementById("log");
+            const cmdIndexEl = document.getElementById("cmdIndex");
+            const buttons = ["playAll", "stepBack", "stepFwd", "execTo", "info"].map((id) => document.getElementById(id));
+
+            let player = null;
+            let cursor = 0;
+
+            function log(msg) {
+                logEl.textContent += msg + "\n";
+                logEl.scrollTop = logEl.scrollHeight;
+            }
+
+            document.getElementById("file").addEventListener("change", async (ev) => {
+                const f = ev.target.files[0];
+                if (!f) { return; }
+                const buffer = await f.arrayBuffer();
+                try {
+                    player = new WebGPUPlayer(buffer);
+                    await player.load(canvas);
+                } catch (e) {
+                    log("Error loading: " + e.message);
+                    return;
+                }
+                cmdIndexEl.max = Math.max(0, player.getCommandCount() - 1);
+                buttons.forEach((b) => b.disabled = false);
+                cmdIndexEl.disabled = false;
+                cursor = 0;
+                log(`Loaded: ${player.getInitCommandCount()} init commands, ${player.getFrameCount()} frame(s), ${player.getCommandCount()} frame commands.`);
+            });
+
+            document.getElementById("playAll").addEventListener("click", async () => {
+                await player.executeAll();
+                log("executeAll() done.");
+            });
+
+            document.getElementById("execTo").addEventListener("click", async () => {
+                cursor = parseInt(cmdIndexEl.value, 10) || 0;
+                await player.executeToCommand(cursor);
+                log(`executeToCommand(${cursor})`);
+            });
+
+            document.getElementById("stepFwd").addEventListener("click", async () => {
+                cursor = Math.min(cursor + 1, player.getCommandCount() - 1);
+                cmdIndexEl.value = cursor;
+                await player.executeToCommand(cursor);
+                log(`step -> ${cursor}: ${describe(cursor)}`);
+            });
+
+            document.getElementById("stepBack").addEventListener("click", async () => {
+                cursor = Math.max(cursor - 1, 0);
+                cmdIndexEl.value = cursor;
+                await player.executeToCommand(cursor);
+                log(`step -> ${cursor}: ${describe(cursor)}`);
+            });
+
+            document.getElementById("info").addEventListener("click", () => {
+                const i = parseInt(cmdIndexEl.value, 10) || 0;
+                const info = player.getCommandInfo(i);
+                log(`command ${i}: ` + JSON.stringify(info, null, 2));
+                const data = player.getCommandData(i);
+                for (const d of data) {
+                    log(`  data[${d.index}] ${d.type} (${d.data.byteLength} bytes)`);
+                }
+            });
+
+            function describe(i) {
+                const info = player.getCommandInfo(i);
+                if (!info) { return "?"; }
+                const r = info.result ? `${info.result} = ` : "";
+                return `${r}${info.object || ""}.${info.method}()`;
+            }
+        </script>
+    </body>
+</html>

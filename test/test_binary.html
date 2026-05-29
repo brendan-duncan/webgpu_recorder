@@ -1,0 +1,20 @@
+<html>
+    <body>
+        <canvas id="#webgpu" width=800 height=600></canvas>
+        <!--
+          Binary output (output: "binary"). Records a frame range and downloads test_binary.wgpu
+          (raw data, no base64) instead of an HTML file. Load the .wgpu in test/player.html or
+          test/play_all.html. Use output: "both" to also get the HTML.
+        -->
+        <script id="webgpu_recorder" type="module">
+            import {WebGPURecorder} from "../webgpu_recorder.js";
+            window.__webgpuRecorder = new WebGPURecorder({
+                "recordMode": 0,
+                "frames": 8,
+                "output": "binary",
+                "export": "test_binary"
+            });
+        </script>
+        <script src="stateful_scene.js"></script>
+    </body>
+</html>

@@ -79,6 +79,11 @@ Where
     * `0` — record every command from the first frame through `frames` frames.
     * `1` — record only the last of `frames` frames.
     * `2` — **stateful arbitrary-frame capture** (see below).
+* **output**: the output format (default `"html"`):
+    * `"html"` — the self-contained, openable HTML file (data embedded as base64).
+    * `"binary"` — an efficient `.wgpu` file (raw data, no base64) for use with the player (see
+      [Binary Recordings and the Player](#binary-recordings-and-the-player)).
+    * `"both"` — produce both an `.html` and a `.wgpu`.
 
 ## Recording an Arbitrary Frame (recordMode 2)
 
@@ -145,6 +150,50 @@ worker.
 * Non-mappable buffers have `COPY_SRC` added to their usage automatically so they can be read back.
 * Render bundles and objects created *during* the captured frame are not added to the live state
   model for subsequent `continuous` captures.
+
+## Binary Recordings and the Player
+
+With `output: "binary"` (or `"both"`) the recorder produces a compact `.wgpu` file instead of HTML.
+The commands are stored as a small JSON header and all buffer/texture data is stored as **raw
+bytes** (no base64 inflation, no JavaScript-source overhead), so binary recordings are considerably
+smaller than the equivalent HTML.
+
+`webgpu_player.js` loads a `.wgpu` and replays it by interpreting the command stream against a live
+WebGPU device, with an API to control execution and inspect commands:
+
+```javascript
+import { WebGPUPlayer } from "webgpu_player.js";
+
+const buffer = await (await fetch("WebGPURecord.wgpu")).arrayBuffer();
+const player = new WebGPUPlayer(buffer);
+await player.load(canvas);          // create the device and run the recording's setup once
+
+await player.executeAll();          // replay the whole recording
+
+// Replay up to a specific frame command. If it is inside a render/compute pass or an unfinished
+// command encoder, the player ends the pass, finishes the encoder, and submits, so the partial
+// frame is presented.
+await player.executeToCommand(42);
+
+// Play all frames as an animation (advance state frame-by-frame, like the generated HTML):
+await player.resetForPlayback();
+for (let f = 0; f < player.getFrameCount(); ++f) {
+    await player.renderFrame(f);          // drive one per requestAnimationFrame in a real loop
+}
+
+// Inspect commands and the data they reference (no GPU work):
+player.getCommandCount();           // number of frame commands
+player.getCommandInfo(42);          // { frame, indexInFrame, object, method, result, async, args, dataIndices }
+player.getCommandData(42);          // [{ index, type, data: TypedArray }, ...] (e.g. the bytes a writeBuffer uploads)
+player.getData(dataIndex);          // the TypedArray for a data blob
+player.getInitCommandCount();       // setup (initialize) commands
+player.getInitCommandInfo(i);
+```
+
+The player exposes the **recorded** command descriptors and data; it does not read back live GPU
+resource contents. See `test/test_binary.html` for producing a `.wgpu`, `test/play_all.html` for
+loading one and playing all frames as a looping animation, and `test/player.html` for a stepping UI
+(play, step, execute-to-command, dump command info).
 
 ## Recording From a Web Worker
 

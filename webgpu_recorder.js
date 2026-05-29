@@ -12,6 +12,17 @@ export function webgpu_recorder_download_data(data, filename) {
   }
 }
 
+// Download an ArrayBuffer as a binary file (the recorder's .wgpu output).
+export function webgpu_recorder_download_binary(data, filename) {
+  try {
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(new Blob([data], { type: "application/octet-stream" }));
+    link.download = filename;
+    link.click();
+  } catch (e) {
+  }
+}
+
 export class WebGPURecorder {
   // public:
   constructor(options) {
@@ -36,7 +47,10 @@ export class WebGPURecorder {
       recordFrame: options.recordFrame ?? null,
       // continuous: if true, keep tracking state after a capture so further triggers can
       // capture again in the same session. Otherwise recording stops after the first capture.
-      continuous: !!options.continuous
+      continuous: !!options.continuous,
+      // output: "html" (default) generates the self-contained HTML; "binary" generates an
+      // efficient .wgpu (raw data, no base64) for use with webgpu_player.js; "both" generates each.
+      output: options.output ?? "html"
     };
 
     this.recordSingleFrame = this.config.recordMode === 1;
@@ -971,7 +985,22 @@ export class WebGPURecorder {
     }
 
     this._initializeCommands = this._initializeCommands.filter((cmd) => !!cmd);
-    
+
+    const wantHtml = this.config.output === "html" || this.config.output === "both";
+    const wantBinary = this.config.output === "binary" || this.config.output === "both";
+
+    // Binary-only: skip building the HTML/JS entirely. Wait for any pending readback data, then
+    // serialize the structured command objects + raw data into the .wgpu container.
+    if (wantBinary && !wantHtml) {
+      const self = this;
+      Promise.all(this._externalImageBufferPromises).then(() => {
+        self._externalImageBufferPromises.length = 0;
+        self._downloadBinary(self._buildBinaryRecording(), (self.config.exportName || "WebGpuRecord") + ".wgpu");
+        self._afterStatefulOutput();
+      });
+      return;
+    }
+
     /*if (this.config.removeUnusedResources) {
       for (const obj of unusedObjects) {
         for (let di = 0, dl = this._dataCacheObjects.length; di < dl; ++di) {
@@ -1115,22 +1144,94 @@ export class WebGPURecorder {
             </body>
         </html>\n`;
 
-        self._downloadFile(s, (self.config.exportName || "WebGpuRecord") + ".html");
-
-        if (self._stateful) {
-          if (self.config.continuous || self._captureTargetFrames.size > 0) {
-            // Reset per-capture buffers but keep the live registry so the next pending/triggered
-            // frame can be captured.
-            self._rearmAfterCapture();
-            if (self._recordingStatus) {
-              self._recordingStatus.style.backgroundColor = "#0f0";
-            }
-          } else {
-            self._exporting = false;
-          }
+        const name = self.config.exportName || "WebGpuRecord";
+        self._downloadFile(s, name + ".html");
+        if (wantBinary) {
+          self._downloadBinary(self._buildBinaryRecording(), name + ".wgpu");
         }
+
+        self._afterStatefulOutput();
       });
     });
+  }
+
+  // After an output is produced: in stateful mode, re-arm for the next pending/triggered capture
+  // (keeping the live registry), or clear the exporting flag.
+  _afterStatefulOutput() {
+    if (!this._stateful) {
+      return;
+    }
+    if (this.config.continuous || this._captureTargetFrames.size > 0) {
+      this._rearmAfterCapture();
+      if (this._recordingStatus) {
+        this._recordingStatus.style.backgroundColor = "#0f0";
+      }
+    } else {
+      this._exporting = false;
+    }
+  }
+
+  // Download an ArrayBuffer as a .wgpu file (page) or post it to the main thread (worker).
+  _downloadBinary(buffer, filename) {
+    if (!this.config.download) {
+      return;
+    }
+    if (_document) {
+      webgpu_recorder_download_binary(buffer, filename);
+    } else {
+      _postMessage({ type: "webgpu_record_download_binary", data: buffer, filename }, [buffer]);
+    }
+  }
+
+  // Serialize the recording into the efficient binary container (see webgpu_player.js):
+  //   "WGPR" | version u32 | headerLen u32 | header(JSON utf8) | rawDataSection
+  // The header holds the structured command objects (small) and a data table; the data section
+  // holds the raw buffer/texture bytes with no base64 inflation.
+  _buildBinaryRecording() {
+    const init = this._initializeCommandObjects.filter((c) => !!c);
+    const frames = this._frameCommandObjects.map((f) => f.filter((c) => !!c));
+
+    const dataTable = [];
+    const blobs = [];
+    let offset = 0;
+    for (let i = 0; i < this._arrayCache.length; ++i) {
+      const a = this._arrayCache[i];
+      if (!a || a.array === null || a.array === undefined) {
+        dataTable.push({ type: "", length: 0, offset: 0 });
+        continue;
+      }
+      const bytes = new Uint8Array(a.array.buffer, a.array.byteOffset, a.array.byteLength);
+      dataTable.push({ type: a.type, length: bytes.byteLength, offset });
+      blobs.push(bytes);
+      offset += bytes.byteLength;
+    }
+    const dataTotal = offset;
+
+    const header = {
+      version: 1,
+      canvasWidth: this.config.canvasWidth,
+      canvasHeight: this.config.canvasHeight,
+      gpuVar: this._getObjectVariable(navigator.gpu),
+      contextVar: "context",
+      init,
+      frames,
+      data: dataTable
+    };
+    const headerBytes = new TextEncoder().encode(JSON.stringify(header));
+
+    const buffer = new ArrayBuffer(12 + headerBytes.byteLength + dataTotal);
+    const view = new DataView(buffer);
+    const u8 = new Uint8Array(buffer);
+    u8[0] = 0x57; u8[1] = 0x47; u8[2] = 0x50; u8[3] = 0x52; // "WGPR"
+    view.setUint32(4, 1, true);                            // version
+    view.setUint32(8, headerBytes.byteLength, true);       // header byte length
+    u8.set(headerBytes, 12);
+    let p = 12 + headerBytes.byteLength;
+    for (const b of blobs) {
+      u8.set(b, p);
+      p += b.byteLength;
+    }
+    return buffer;
   }
 
   async _encodeDataUrl(a, type = "application/octet-stream") {
@@ -2552,6 +2653,7 @@ Worker = new Proxy(Worker, {
       const recordMode = self._webgpu_recorder_init.recordMode;
       const recordFrame = self._webgpu_recorder_init.recordFrame;
       const continuous = self._webgpu_recorder_init.continuous;
+      const output = self._webgpu_recorder_init.output;
       const webgpuRecorderConfig = {
           "frames": frames || 1,
           "export": filename,
@@ -2560,7 +2662,8 @@ Worker = new Proxy(Worker, {
           "download": download === null ? true : download === "false" ? false : download === "true" ? true : download,
           "recordMode": recordMode ?? 0,
           "recordFrame": recordFrame ?? null,
-          "continuous": !!continuous
+          "continuous": !!continuous,
+          "output": output ?? "html"
       }
       src = src.replaceAll(`<%=webgpuRecorderConfig%>`, JSON.stringify(webgpuRecorderConfig));
     }
@@ -2590,6 +2693,8 @@ Worker = new Proxy(Worker, {
     backing.addEventListener("message", (event) => {
       if (event.data.type === "webgpu_record_download") {
         webgpu_recorder_download_data(event.data.data, event.data.filename);
+      } else if (event.data.type === "webgpu_record_download_binary") {
+        webgpu_recorder_download_binary(event.data.data, event.data.filename);
       } else if (event.data.__webgpuRecorder) {
         window.dispatchEvent(new CustomEvent("__WebGPURecorder", { detail: event.data }));
       }
@@ -2663,6 +2768,7 @@ export let __webgpuRecorder = null;
       const recordMode = script.getAttribute("recordMode");
       const recordFrame = script.getAttribute("recordFrame");
       const continuous = script.getAttribute("continuous");
+      const output = script.getAttribute("output");
       webgpuRecorderConfig = {
         "frames": frames || 1,
         "export": filename,
@@ -2674,7 +2780,8 @@ export let __webgpuRecorder = null;
           : recordFrame.indexOf(",") !== -1
             ? recordFrame.split(",").map((s) => parseInt(s.trim(), 10)).filter((n) => !isNaN(n))
             : parseInt(recordFrame, 10),
-        "continuous": continuous !== null
+        "continuous": continuous !== null,
+        "output": output === null ? "html" : output
       }
     }
   }
