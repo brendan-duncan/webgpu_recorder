@@ -106,18 +106,22 @@ are included; everything else is discarded.
 ```javascript
 new WebGPURecorder({
     "recordMode": 2,
-    "recordFrame": 500,    // capture frame 500 (rAF count from page load); omit to trigger later
+    "recordFrame": 500,    // capture the 500th rendering frame; omit to trigger later
     "continuous": false,   // if true, keep tracking so further triggers can capture again
     "export": "WebGPURecord"
 });
 ```
 
-* **recordFrame**: the absolute frame index (count of `requestAnimationFrame` callbacks since page
-  load) to capture. May also be an **array** of indices to capture several frames in one session,
-  e.g. `"recordFrame": [8, 20, 500]`. When more than one frame is captured, each downloaded file is
-  suffixed with its frame number (`${export}_8.html`, `${export}_20.html`, ...). Recording stops
-  after the last listed frame (unless `continuous` is `true`). If omitted, the recorder tracks state
-  and waits for a runtime trigger.
+* **recordFrame**: the index (0-based) of the frame to capture. Only frames that actually render
+  (submit GPU work) are counted — non-rendering `requestAnimationFrame` ticks (idle loops) are
+  skipped, so a capture is never an empty frame. May also be an **array** of indices to capture
+  several frames in one session, e.g. `"recordFrame": [8, 20, 500]`. When more than one frame is
+  captured, each downloaded file is suffixed with its frame number (`${export}_8.html`,
+  `${export}_20.html`, ...). Recording stops after the last listed frame (unless `continuous` is
+  `true`). If omitted, the recorder tracks state and waits for a runtime trigger.
+
+Only the objects and data actually used by the captured frame are saved: unreachable objects and any
+buffer/texture contents not referenced by the frame are culled from the output.
 * **continuous**: if `true`, the recorder keeps tracking state after a capture so it can capture
   again later in the same session. If `false` (default), recording stops after the last captured
   frame.
@@ -128,8 +132,8 @@ In addition to `recordFrame`, a capture can be requested at runtime three ways:
 
 ```javascript
 // 1. From code / the console, via the exported recorder instance:
-__webgpuRecorder.recordNextFrame();      // capture whichever frame comes next
-__webgpuRecorder.recordFrame(500);       // capture an absolute frame index
+__webgpuRecorder.recordNextFrame();      // capture the next rendering frame
+__webgpuRecorder.recordFrame(500);       // capture the 500th rendering frame
 __webgpuRecorder.recordFrame([8, 20]);   // queue several frames to capture
 
 // 2. By dispatching an event (from the page or an extension):

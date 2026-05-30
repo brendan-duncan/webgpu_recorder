@@ -1,0 +1,30 @@
+<html>
+    <body>
+        <canvas id="#webgpu" width=800 height=600></canvas>
+        <!--
+          Tests two things:
+            1. Capturing a specific frame when the page also runs non-rendering rAF loops. The page
+               has two idle rAF loops that never submit GPU work plus one render loop; recordFrame:
+               10 must capture the 10th *rendering* frame, not the 10th rAF callback (which could be
+               an idle tick, producing an empty capture).
+            2. Culling unused data. The scene creates a large unused buffer, an unused texture, and
+               an unused shader/pipeline that the rendered frame never references. Object culling
+               drops their creation commands and data culling drops their bytes from the saved file.
+
+          output: "both" downloads test_cull.html (open it to confirm frame 10 renders) and
+          test_cull.wgpu (load in test/play_all.html or test/player.html). The recording should be
+          small and contain only the triangle's pipeline + uniform buffer, not the decoys.
+        -->
+        <script id="webgpu_recorder" type="module">
+            import {WebGPURecorder} from "../webgpu_recorder.js";
+            window.__webgpuRecorder = new WebGPURecorder({
+                "recordMode": 2,
+                "recordFrame": 10,
+                "continuous": false,
+                "output": "both",
+                "export": "test_cull"
+            });
+        </script>
+        <script src="test_cull.js"></script>
+    </body>
+</html>

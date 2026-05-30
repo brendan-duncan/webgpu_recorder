@@ -43,7 +43,9 @@ export class WebGPURecorder {
       compactCommands: !!options.compactCommands,
       recordMode: options.recordMode ?? 0,
       // recordMode 2 (stateful) options:
-      // recordFrame: absolute rAF frame index to capture (0-based). null = wait for a trigger.
+      // recordFrame: index (0-based) of the rendering frame to capture, or an array of indices.
+      // Only frames that submit GPU work count; non-rendering rAF ticks are skipped. null = wait
+      // for a runtime trigger.
       recordFrame: options.recordFrame ?? null,
       // continuous: if true, keep tracking state after a capture so further triggers can
       // capture again in the same session. Otherwise recording stops after the first capture.
@@ -60,11 +62,17 @@ export class WebGPURecorder {
     // dependencies) and, when a target frame is reached, read back the current contents of every
     // live resource off the GPU to build the initialize block, then record that single frame.
     this._stateful = this.config.recordMode === 2;
-    // Number of rAF callbacks seen so far (the "frame" the user refers to). -1 before the first.
-    this._rafCount = -1;
-    // The set of absolute rAF indices still pending capture. recordFrame may be a single number or
-    // an array of numbers; runtime triggers (recordFrame/recordNextFrame) add more. Each frame is
-    // removed as it is captured.
+    // The "frame" the user refers to is a frame that actually rendered (submitted GPU work).
+    // Non-rendering rAF ticks (idle loops) are not counted, so capturing frame N targets the Nth
+    // rendering frame. _renderedFrameCount is how many rendering frames have completed so far.
+    this._renderedFrameCount = 0;
+    // Whether the current rAF has submitted any GPU work (set on queue.submit).
+    this._frameDidRender = false;
+    // Whether we are currently between _frameStart and _frameEnd.
+    this._inFrame = false;
+    // The set of absolute rendering-frame indices still pending capture. recordFrame may be a single
+    // number or an array of numbers; runtime triggers (recordFrame/recordNextFrame) add more. Each
+    // frame is removed as it is captured.
     this._captureTargetFrames = new Set();
     const _rf = this.config.recordFrame;
     if (Array.isArray(_rf)) {
@@ -343,50 +351,84 @@ export class WebGPURecorder {
     }
   }
 
-  // Arm the recorder to capture whichever frame comes next.
+  // Arm the recorder to capture whichever rendering frame comes next.
   recordNextFrame() {
     if (!this._stateful) {
       return;
     }
-    this._captureTargetFrames.add(this._rafCount + 1);
+    this._captureTargetFrames.add(this._renderedFrameCount + (this._inFrame ? 1 : 0));
   }
 
   _statefulFrameStart(timestamp) {
-    this._rafCount++;
+    this._inFrame = true;
+    this._frameDidRender = false;
     if (this._exporting) {
       return; // Don't start a new capture while a previous one is still being exported.
     }
-    if (this._captureTargetFrames.has(this._rafCount)) {
-      this._captureTargetFrames.delete(this._rafCount);
-      this._captureFrameNumber = this._rafCount;
+    // Speculatively begin capturing when we reach the target rendering-frame index. Whether this
+    // rAF actually rendered is only known at frame end; an empty (non-rendering) rAF is discarded
+    // and we stay armed for the next one.
+    if (!this._isCapturingFrame && this._captureTargetFrames.has(this._renderedFrameCount)) {
+      this._captureFrameNumber = this._renderedFrameCount;
       this._beginFrameCapture();
     }
   }
 
   _statefulFrameEnd(timestamp) {
-    if (!this._isCapturingFrame) {
+    this._inFrame = false;
+
+    if (this._isCapturingFrame) {
+      if (!this._frameDidRender) {
+        // A non-rendering rAF (e.g. an idle loop tick): don't capture an empty frame. Discard the
+        // speculative capture and stay armed for the next rendering frame.
+        this._discardCapture();
+        return;
+      }
+
+      this._isCapturingFrame = false;
+
+      this._frameCommands.push(this._currentFrameCommands);
+      this._frameObjects.push(this._currentFrameObjects);
+      this._frameCommandObjects.push(this._currentFrameCommandObjects);
+      this._currentFrameCommands = null;
+      this._currentFrameObjects = null;
+      this._currentFrameCommandObjects = null;
+      // Leave the per-frame state immediately: in continuous/on-demand mode the page keeps rendering
+      // during the async export below, before _rearmAfterCapture() runs. Those commands must route to
+      // the registry (initialize) path; without resetting _frameIndex here they'd take the frame
+      // branch and push onto the now-null _currentFrame* arrays (TypeError: reading 'push' of null).
+      this._frameIndex = -1;
+
+      this._captureTargetFrames.delete(this._captureFrameNumber);
+      this._renderedFrameCount++;
+
+      // Build the initialize block from the live object registry (reachable objects in creation
+      // order) followed by the resource-content readback commands captured at frame start.
+      this._flattenStateToInit();
+
+      this._exporting = true;
+      this.generateOutput();
       return;
     }
-    this._isCapturingFrame = false;
 
-    this._frameCommands.push(this._currentFrameCommands);
-    this._frameObjects.push(this._currentFrameObjects);
-    this._frameCommandObjects.push(this._currentFrameCommandObjects);
+    // Not capturing: only count rAFs that actually rendered toward the target frame index.
+    if (this._frameDidRender) {
+      this._renderedFrameCount++;
+    }
+  }
+
+  // Abandon a speculative capture of a non-rendering rAF. The readback copies already submitted for
+  // this attempt resolve harmlessly into their (now unreferenced) data slots, which are culled
+  // before the recording is saved. The live object registry is untouched, so we stay armed.
+  _discardCapture() {
+    this._isCapturingFrame = false;
     this._currentFrameCommands = null;
     this._currentFrameObjects = null;
     this._currentFrameCommandObjects = null;
-    // Leave the per-frame state immediately: in continuous/on-demand mode the page keeps rendering
-    // during the async export below, before _rearmAfterCapture() runs. Those commands must route to
-    // the registry (initialize) path; without resetting _frameIndex here they'd take the frame
-    // branch and push onto the now-null _currentFrame* arrays (TypeError: reading 'push' of null).
     this._frameIndex = -1;
-
-    // Build the initialize block from the live object registry (reachable objects in creation
-    // order) followed by the resource-content readback commands captured at frame start.
-    this._flattenStateToInit();
-
-    this._exporting = true;
-    this.generateOutput();
+    this._readbackCommands = null;
+    this._readbackObjects = null;
+    this._readbackCommandObjects = null;
   }
 
   // At the start of the target frame (before the app's frame callback runs), snapshot the current
@@ -1000,6 +1042,7 @@ export class WebGPURecorder {
       const self = this;
       Promise.all(this._externalImageBufferPromises).then(() => {
         self._externalImageBufferPromises.length = 0;
+        self._cullUnusedData();
         self._downloadBinary(self._buildBinaryRecording(), (self.config.exportName || "WebGpuRecord") + ".wgpu");
         self._afterStatefulOutput();
       });
@@ -1125,6 +1168,7 @@ export class WebGPURecorder {
     const self = this;
     Promise.all(this._externalImageBufferPromises).then(() => {
       self._externalImageBufferPromises.length = 0;
+      self._cullUnusedData();
       const promises = [];
       for (let ai = 0; ai < self._arrayCache.length; ++ai) {
         const a = self._arrayCache[ai];
@@ -1185,6 +1229,50 @@ export class WebGPURecorder {
       webgpu_recorder_download_binary(buffer, filename);
     } else {
       _postMessage({ type: "webgpu_record_download_binary", data: buffer, filename }, [buffer]);
+    }
+  }
+
+  // Drop data blobs that no emitted command references, so unused buffer/texture contents (e.g.
+  // resources read back at capture time but not used by the captured frame) aren't saved. Nulling
+  // the cached array makes both the HTML and binary serializers skip it.
+  _cullUnusedData() {
+    const referenced = new Set();
+    const scan = (cmd) => {
+      if (!cmd || !cmd.args) {
+        return;
+      }
+      if (cmd.method === "__writeData") {
+        // __writeData stores a raw data-blob index as its only argument.
+        try {
+          const a = JSON.parse(cmd.args);
+          if (typeof a[0] === "number") {
+            referenced.add(a[0]);
+          }
+        } catch (e) { /* ignore */ }
+        return;
+      }
+      const re = /"__data"\s*:\s*(\d+)/g;
+      let m;
+      while ((m = re.exec(cmd.args)) !== null) {
+        referenced.add(parseInt(m[1], 10));
+      }
+    };
+
+    for (const c of this._initializeCommandObjects) {
+      scan(c);
+    }
+    for (const frame of this._frameCommandObjects) {
+      if (frame) {
+        for (const c of frame) {
+          scan(c);
+        }
+      }
+    }
+
+    for (let i = 0; i < this._arrayCache.length; ++i) {
+      if (this._arrayCache[i] && !referenced.has(i)) {
+        this._arrayCache[i].array = null;
+      }
     }
   }
 
@@ -1516,6 +1604,12 @@ export class WebGPURecorder {
   _onMethodCall(object, method, args, result) {
     if (!this._isRecording) {
       return;
+    }
+
+    // A frame "counts" only if it submitted GPU work; this lets stateful capture skip empty
+    // (non-rendering) rAF ticks when choosing which frame to capture.
+    if (this._stateful && method === "submit") {
+      this._frameDidRender = true;
     }
 
     if (method === "destroy") {
