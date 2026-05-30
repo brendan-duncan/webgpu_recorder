@@ -375,6 +375,11 @@ export class WebGPURecorder {
     this._currentFrameCommands = null;
     this._currentFrameObjects = null;
     this._currentFrameCommandObjects = null;
+    // Leave the per-frame state immediately: in continuous/on-demand mode the page keeps rendering
+    // during the async export below, before _rearmAfterCapture() runs. Those commands must route to
+    // the registry (initialize) path; without resetting _frameIndex here they'd take the frame
+    // branch and push onto the now-null _currentFrame* arrays (TypeError: reading 'push' of null).
+    this._frameIndex = -1;
 
     // Build the initialize block from the live object registry (reachable objects in creation
     // order) followed by the resource-content readback commands captured at frame start.
