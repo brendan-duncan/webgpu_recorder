@@ -861,6 +861,54 @@ export class WebGPURecorder {
     }
   }
 
+  _removeUnusedCommandObjects(commandObjects, unusedObjects) {
+    for (let i = commandObjects.length - 1; i >= 0; --i) {
+      const cmd = commandObjects[i];
+      if (!cmd) {
+        continue;
+      }
+      // Check if the command's object or result is in the unused set
+      const cmdObjectId = cmd.object;
+      const cmdResultId = cmd.result;
+      if (unusedObjects.has(cmdObjectId) || unusedObjects.has(cmdResultId)) {
+        commandObjects[i] = null;
+        continue;
+      }
+      // Check if any referenced objects in args are unused
+      try {
+        const args = JSON.parse(cmd.args);
+        if (this._containsUnusedObjectId(args, unusedObjects)) {
+          commandObjects[i] = null;
+        }
+      } catch (e) {
+        // If args can't be parsed, keep the command
+      }
+    }
+  }
+
+  _containsUnusedObjectId(obj, unusedObjects) {
+    if (!obj || typeof obj !== "object") {
+      return false;
+    }
+    if (Array.isArray(obj)) {
+      for (const item of obj) {
+        if (this._containsUnusedObjectId(item, unusedObjects)) {
+          return true;
+        }
+      }
+      return false;
+    }
+    if (obj.__id !== undefined && unusedObjects.has(obj.__id)) {
+      return true;
+    }
+    for (const key in obj) {
+      if (this._containsUnusedObjectId(obj[key], unusedObjects)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   _filterFrameCommands(frameIndex) {
     const commands = this._frameCommands[frameIndex];
     const objects = this._frameObjects[frameIndex];
@@ -918,20 +966,6 @@ export class WebGPURecorder {
     this._initializeObjects = newObjects;
   }
 
-  _getDataVariables() {
-    let s = "";
-    for (let i = 0, l = this._arrayCache.length; i < l; ++i) {
-      if (this._arrayCache[i].array === null) {
-        continue;
-      }
-      if (i === 0) {
-        s = `let ${this._getDataVariable(i)}`;
-      } else {
-        s += `, ${this._getDataVariable(i)}`;
-      }
-    }
-    return s;
-  }
 
   _reorderFrameCommands(frameIndex) {
     const frameCommands = this._frameCommands[frameIndex].filter((cmd) => cmd && cmd !== "\n");
@@ -1029,6 +1063,11 @@ export class WebGPURecorder {
       }
 
       this._removeUnusedCommands(this._initializeObjects, this._initializeCommands, unusedObjects, "");
+      // Also filter command objects by unused resources
+      this._removeUnusedCommandObjects(this._initializeCommandObjects, unusedObjects);
+      for (let i = 0; i < this._frameCommandObjects.length; ++i) {
+        this._removeUnusedCommandObjects(this._frameCommandObjects[i], unusedObjects);
+      }
     }
 
     this._initializeCommands = this._initializeCommands.filter((cmd) => !!cmd);
@@ -1036,171 +1075,28 @@ export class WebGPURecorder {
     const wantHtml = this.config.output === "html" || this.config.output === "both";
     const wantBinary = this.config.output === "binary" || this.config.output === "both";
 
-    // Binary-only: skip building the HTML/JS entirely. Wait for any pending readback data, then
-    // serialize the structured command objects + raw data into the .wgpu container.
-    if (wantBinary && !wantHtml) {
-      const self = this;
-      Promise.all(this._externalImageBufferPromises).then(() => {
-        self._externalImageBufferPromises.length = 0;
-        self._cullUnusedData();
-        self._downloadBinary(self._buildBinaryRecording(), (self.config.exportName || "WebGpuRecord") + ".wgpu");
-        self._afterStatefulOutput();
-      });
-      return;
-    }
-
-    /*if (this.config.removeUnusedResources) {
-      for (const obj of unusedObjects) {
-        for (let di = 0, dl = this._dataCacheObjects.length; di < dl; ++di) {
-          let dataObj = this._dataCacheObjects[di];
-          if (dataObj) {
-            for (let li = dataObj.length - 1; li >= 0; --li) {
-              if (dataObj[li].__id === obj) {
-                dataObj.splice(li, 1);
-              }
-            }
-            if (dataObj.length === 0) {
-              this._arrayCache[di].length = 0;
-              this._arrayCache[di].type = "";
-              this._arrayCache[di].array = null;
-            }
-          }
-        }
-      }
-    }*/
-
-    let s =`
-    <!DOCTYPE html>
-    <html>
-        <body style="text-align: center; margin: 0; padding: 0;">
-            <canvas id="#webgpu" width=${this.config.canvasWidth} height=${this.config.canvasHeight}></canvas>
-            <script>
-    ${this._getDataVariables()};
-    async function main() {
-      await loadData();
-
-      let canvas = document.getElementById("#webgpu");
-      let context = canvas.getContext("webgpu");
-      let frameLabel = document.createElement("div");
-      frameLabel.style = "position: absolute; top: 10px; left: 10px; font-size: 24pt; color: #f00;";
-      document.body.append(frameLabel);
-      ${this._getVariableDeclarations(-1)}
-      ${this._initializeCommands.join("\n  ")}\n`;
-
-    for (let fi = 0, fl = this._frameCommands.length; fi < fl; ++fi) {
-      if (this.config.removeUnusedResources) {
-        this._removeUnusedCommands(this._frameObjects[fi], this._frameCommands[fi], unusedObjects, "");
-        this._frameCommands[fi] = this._frameCommands[fi].filter((cmd) => !!cmd);
-      }
-
-      if (this.recordSingleFrame && this._usedObjectIds.size > 0) {
-        this._filterFrameCommands(fi);
-      }
-
-      if (this.config.compactCommands) {
-        this._reorderFrameCommands(fi);
-      }
-
-      s += `
-      async function f${fi}() {
-          ${this._getVariableDeclarations(fi)}
-          ${this._frameCommands[fi].join("\n  ")}
-      }\n`;
-    }
-
-    s += "    let frames=[";
-    for (let fi = 0, fl = this._frameCommands.length; fi < fl; ++fi) {
-      s += `f${fi},`;
-    }
-    s += "];";
-
-    s += `
-        let frame = 0;
-        let lastFrame = -1;
-        let t0 = performance.now();
-        async function renderFrame() {
-            if (frame > ${this._frameCommands.length - 1}) return;
-            requestAnimationFrame(renderFrame);
-            if (frame == lastFrame) return;
-            lastFrame = frame;
-            let t1 = performance.now();
-            frameLabel.innerText = "F: " + (frame + 1) + "  T:" + (t1 - t0).toFixed(2);
-            t0 = t1;
-            try {
-                await frames[frame]();
-            } catch (err) {
-                console.log("Error Frame:", frame);
-                console.error(err.message);
-            }
-            frame++;
-        }
-        requestAnimationFrame(renderFrame);
-    }
-
-    function setCanvasSize(canvas, width, height) {
-        if (canvas.width !== width || canvas.height !== height) {
-            canvas.width = width;
-            canvas.height = height;
-        }
-    }
-
-    async function B64ToA(type, length, s) {
-        if (Uint8Array.fromBase64) {
-            const s2 = s.substr(s.indexOf(",") + 1);
-            const b = Uint8Array.fromBase64(s2);
-            if (type == "Uint32Array") {
-              return new Uint32Array(b.buffer);
-            }
-            return b;
-        }
-        const res = await fetch(s);
-        const x = new Uint8Array(await res.arrayBuffer());
-        if (type == "Uint32Array") {
-            return new Uint32Array(x.buffer, 0, x.length/4);
-        }
-        return new Uint8Array(x.buffer, 0, x.length);
-    }
-
-    async function loadData() {\n`;
-
-    this._encodedData = [];
-
     const self = this;
     Promise.all(this._externalImageBufferPromises).then(() => {
       self._externalImageBufferPromises.length = 0;
-      self._cullUnusedData();
-      const promises = [];
-      for (let ai = 0; ai < self._arrayCache.length; ++ai) {
-        const a = self._arrayCache[ai];
-        if (a.array === null) {
-          continue;
-        }
-        const varName = self._getDataVariable(ai);
-        promises.push(new Promise((resolve) => {
-          self._encodeDataUrl(a.array).then((b64) => {
-            self._encodedData[ai] = b64;
-            s += `${varName} = await B64ToA("${a.type}", ${a.length}, "${b64}");\n`;
-            resolve();
-          });
-        }));
+
+      // Build unified binary data once (consolidates all data handling)
+      const binaryData = self._buildUnifiedBinaryData();
+      const exportName = self.config.exportName || "WebGpuRecord";
+
+      // Download binary if needed
+      if (wantBinary) {
+        self._downloadBinary(self._serializeBinaryContainer(binaryData), exportName + ".wgpu");
       }
 
-      Promise.all(promises).then(() => {
-        s += `
-        }
-        main();
-                </script>
-            </body>
-        </html>\n`;
-
-        const name = self.config.exportName || "WebGpuRecord";
-        self._downloadFile(s, name + ".html");
-        if (wantBinary) {
-          self._downloadBinary(self._buildBinaryRecording(), name + ".wgpu");
-        }
-
+      // Generate and download HTML if needed
+      if (wantHtml) {
+        self._generateHtmlFromBinaryData(binaryData).then((html) => {
+          self._downloadFile(html, exportName + ".html");
+          self._afterStatefulOutput();
+        });
+      } else {
         self._afterStatefulOutput();
-      });
+      }
     });
   }
 
@@ -1232,100 +1128,7 @@ export class WebGPURecorder {
     }
   }
 
-  // Drop data blobs that no emitted command references, so unused buffer/texture contents (e.g.
-  // resources read back at capture time but not used by the captured frame) aren't saved. Nulling
-  // the cached array makes both the HTML and binary serializers skip it.
-  _cullUnusedData() {
-    const referenced = new Set();
-    const scan = (cmd) => {
-      if (!cmd || !cmd.args) {
-        return;
-      }
-      if (cmd.method === "__writeData") {
-        // __writeData stores a raw data-blob index as its only argument.
-        try {
-          const a = JSON.parse(cmd.args);
-          if (typeof a[0] === "number") {
-            referenced.add(a[0]);
-          }
-        } catch (e) { /* ignore */ }
-        return;
-      }
-      const re = /"__data"\s*:\s*(\d+)/g;
-      let m;
-      while ((m = re.exec(cmd.args)) !== null) {
-        referenced.add(parseInt(m[1], 10));
-      }
-    };
 
-    for (const c of this._initializeCommandObjects) {
-      scan(c);
-    }
-    for (const frame of this._frameCommandObjects) {
-      if (frame) {
-        for (const c of frame) {
-          scan(c);
-        }
-      }
-    }
-
-    for (let i = 0; i < this._arrayCache.length; ++i) {
-      if (this._arrayCache[i] && !referenced.has(i)) {
-        this._arrayCache[i].array = null;
-      }
-    }
-  }
-
-  // Serialize the recording into the efficient binary container (see webgpu_player.js):
-  //   "WGPR" | version u32 | headerLen u32 | header(JSON utf8) | rawDataSection
-  // The header holds the structured command objects (small) and a data table; the data section
-  // holds the raw buffer/texture bytes with no base64 inflation.
-  _buildBinaryRecording() {
-    const init = this._initializeCommandObjects.filter((c) => !!c);
-    const frames = this._frameCommandObjects.map((f) => f.filter((c) => !!c));
-
-    const dataTable = [];
-    const blobs = [];
-    let offset = 0;
-    for (let i = 0; i < this._arrayCache.length; ++i) {
-      const a = this._arrayCache[i];
-      if (!a || a.array === null || a.array === undefined) {
-        dataTable.push({ type: "", length: 0, offset: 0 });
-        continue;
-      }
-      const bytes = new Uint8Array(a.array.buffer, a.array.byteOffset, a.array.byteLength);
-      dataTable.push({ type: a.type, length: bytes.byteLength, offset });
-      blobs.push(bytes);
-      offset += bytes.byteLength;
-    }
-    const dataTotal = offset;
-
-    const header = {
-      version: 1,
-      canvasWidth: this.config.canvasWidth,
-      canvasHeight: this.config.canvasHeight,
-      gpuVar: this._getObjectVariable(navigator.gpu),
-      contextVar: "context",
-      init,
-      frames,
-      data: dataTable
-    };
-    const headerBytes = new TextEncoder().encode(JSON.stringify(header));
-
-    const buffer = new ArrayBuffer(12 + headerBytes.byteLength + dataTotal);
-    const view = new DataView(buffer);
-    const u8 = new Uint8Array(buffer);
-    u8[0] = 0x57; u8[1] = 0x47; u8[2] = 0x50; u8[3] = 0x52; // "WGPR"
-    view.setUint32(4, 1, true);                            // version
-    view.setUint32(8, headerBytes.byteLength, true);       // header byte length
-    u8.set(headerBytes, 12);
-    let p = 12 + headerBytes.byteLength;
-    for (const b of blobs) {
-      u8.set(b, p);
-      p += b.byteLength;
-    }
-    return buffer;
-  }
 
   async _encodeDataUrl(a, type = "application/octet-stream") {
     const bytes = new Uint8Array(a.buffer, a.byteOffset, a.byteLength);
@@ -2269,6 +2072,304 @@ export class WebGPURecorder {
         this._initializeCommandObjects = _savedInit[2];
       }
     }
+  }
+
+  // Scan all commands to find which data indices are referenced.
+  _extractDataVariableReferences() {
+    const referenced = new Set();
+    const scan = (cmd) => {
+      if (!cmd || !cmd.args) {
+        return;
+      }
+      if (cmd.method === "__writeData") {
+        try {
+          const a = JSON.parse(cmd.args);
+          if (typeof a[0] === "number") {
+            referenced.add(a[0]);
+          }
+        } catch (e) { /* ignore */ }
+        return;
+      }
+      const re = /"__data"\s*:\s*(\d+)/g;
+      let m;
+      while ((m = re.exec(cmd.args)) !== null) {
+        referenced.add(parseInt(m[1], 10));
+      }
+    };
+
+    for (const c of this._initializeCommandObjects) {
+      scan(c);
+    }
+    for (const frame of this._frameCommandObjects) {
+      if (frame) {
+        for (const c of frame) {
+          scan(c);
+        }
+      }
+    }
+
+    return referenced;
+  }
+
+  // Build unified binary data structure: commands + data table + raw bytes.
+  _buildUnifiedBinaryData() {
+    const referenced = this._extractDataVariableReferences();
+
+    const dataTable = [];
+    const blobs = [];
+    let offset = 0;
+    for (let i = 0; i < this._arrayCache.length; ++i) {
+      const a = this._arrayCache[i];
+      if (!a || a.array === null || a.array === undefined || !referenced.has(i)) {
+        dataTable.push({ type: "", length: 0, offset: 0 });
+        continue;
+      }
+      const bytes = new Uint8Array(a.array.buffer, a.array.byteOffset, a.array.byteLength);
+      dataTable.push({ type: a.type, length: bytes.byteLength, offset });
+      blobs.push(bytes);
+      offset += bytes.byteLength;
+    }
+    const dataTotal = offset;
+
+    const rawDataBlob = new Uint8Array(dataTotal);
+    let pos = 0;
+    for (const b of blobs) {
+      rawDataBlob.set(b, pos);
+      pos += b.byteLength;
+    }
+
+    const init = this._initializeCommandObjects.filter((c) => !!c);
+    const frames = this._frameCommandObjects.map((f) => f.filter((c) => !!c));
+
+    return {
+      version: 1,
+      canvasWidth: this.config.canvasWidth,
+      canvasHeight: this.config.canvasHeight,
+      gpuVar: this._getObjectVariable(navigator.gpu),
+      contextVar: "context",
+      init,
+      frames,
+      dataTable,
+      rawDataBlob
+    };
+  }
+
+  // Serialize unified binary data to WGPR container format.
+  _serializeBinaryContainer(data) {
+    const header = {
+      version: data.version,
+      canvasWidth: data.canvasWidth,
+      canvasHeight: data.canvasHeight,
+      gpuVar: data.gpuVar,
+      contextVar: data.contextVar,
+      init: data.init,
+      frames: data.frames,
+      data: data.dataTable
+    };
+    const headerBytes = new TextEncoder().encode(JSON.stringify(header));
+
+    const buffer = new ArrayBuffer(12 + headerBytes.byteLength + data.rawDataBlob.byteLength);
+    const view = new DataView(buffer);
+    const u8 = new Uint8Array(buffer);
+    u8[0] = 0x57; u8[1] = 0x47; u8[2] = 0x50; u8[3] = 0x52; // "WGPR"
+    view.setUint32(4, data.version, true);
+    view.setUint32(8, headerBytes.byteLength, true);
+    u8.set(headerBytes, 12);
+    u8.set(data.rawDataBlob, 12 + headerBytes.byteLength);
+    return buffer;
+  }
+
+  // Convert a command object back to a readable JavaScript line.
+  _commandObjectToJavaScriptLine(cmd) {
+    if (!cmd) {
+      return "";
+    }
+
+    let args;
+    try {
+      args = JSON.parse(cmd.args);
+    } catch (e) {
+      args = [];
+    }
+
+    const convertArg = (arg) => {
+      if (arg === null) {
+        return "null";
+      } else if (Array.isArray(arg)) {
+        return `[${arg.map(convertArg).join(", ")}]`;
+      } else if (typeof arg === "object") {
+        if (arg.__id !== undefined) {
+          return arg.__id;
+        }
+        if (arg.__data !== undefined) {
+          return this._getDataVariable(arg.__data);
+        }
+        const entries = [];
+        for (const [key, value] of Object.entries(arg)) {
+          entries.push(`${key}: ${convertArg(value)}`);
+        }
+        return `{${entries.join(", ")}}`;
+      } else if (typeof arg === "string") {
+        return JSON.stringify(arg);
+      } else {
+        return String(arg);
+      }
+    };
+
+    const argStr = args.length === 0 ? "" : args.map(convertArg).join(", ");
+
+    if (cmd.result && cmd.result !== "undefined") {
+      return `${cmd.async}${cmd.result} = ${cmd.object}.${cmd.method}(${argStr});`;
+    } else {
+      return `${cmd.async}${cmd.object}.${cmd.method}(${argStr});`;
+    }
+  }
+
+  // Generate HTML from unified binary data.
+  async _generateHtmlFromBinaryData(data) {
+    const self = this;
+
+    const dataVariables = [];
+    for (let i = 0; i < data.dataTable.length; ++i) {
+      const entry = data.dataTable[i];
+      if (entry.type === "") {
+        continue;
+      }
+      const varName = this._getDataVariable(i);
+      dataVariables.push({ index: i, varName });
+    }
+
+    let dataVariableDeclarations = "";
+    if (dataVariables.length > 0) {
+      dataVariableDeclarations = "let " + dataVariables.map(dv => dv.varName).join(", ") + ";";
+    }
+
+    let s = `
+    <!DOCTYPE html>
+    <html>
+        <body style="text-align: center; margin: 0; padding: 0;">
+            <canvas id="#webgpu" width=${data.canvasWidth} height=${data.canvasHeight}></canvas>
+            <script>
+    ${dataVariableDeclarations}
+    async function main() {
+      await loadData();
+
+      let canvas = document.getElementById("#webgpu");
+      let context = canvas.getContext("webgpu");
+      let frameLabel = document.createElement("div");
+      frameLabel.style = "position: absolute; top: 10px; left: 10px; font-size: 24pt; color: #f00;";
+      document.body.append(frameLabel);
+      ${this._getVariableDeclarations(-1)}
+`;
+
+    for (const cmd of data.init) {
+      s += `      ${this._commandObjectToJavaScriptLine(cmd)}\n`;
+    }
+
+    for (let fi = 0; fi < data.frames.length; ++fi) {
+      s += `
+      async function f${fi}() {
+          ${this._getVariableDeclarations(fi)}
+`;
+      for (const cmd of data.frames[fi]) {
+        s += `          ${this._commandObjectToJavaScriptLine(cmd)}\n`;
+      }
+      s += `      }\n`;
+    }
+
+    s += `
+        let frames=[`;
+    for (let fi = 0; fi < data.frames.length; ++fi) {
+      s += `f${fi},`;
+    }
+    s += `];
+        let frame = 0;
+        let lastFrame = -1;
+        let t0 = performance.now();
+        async function renderFrame() {
+            if (frame > ${data.frames.length - 1}) return;
+            requestAnimationFrame(renderFrame);
+            if (frame == lastFrame) return;
+            lastFrame = frame;
+            let t1 = performance.now();
+            frameLabel.innerText = "F: " + (frame + 1) + "  T:" + (t1 - t0).toFixed(2);
+            t0 = t1;
+            try {
+                await frames[frame]();
+            } catch (err) {
+                console.log("Error Frame:", frame);
+                console.error(err.message);
+            }
+            frame++;
+        }
+        requestAnimationFrame(renderFrame);
+    }
+
+    function setCanvasSize(canvas, width, height) {
+        if (canvas.width !== width || canvas.height !== height) {
+            canvas.width = width;
+            canvas.height = height;
+        }
+    }
+
+    async function B64ToA(type, length, s) {
+        if (Uint8Array.fromBase64) {
+            const s2 = s.substr(s.indexOf(",") + 1);
+            const b = Uint8Array.fromBase64(s2);
+            if (type == "Uint32Array") {
+              return new Uint32Array(b.buffer);
+            }
+            return b;
+        }
+        const res = await fetch(s);
+        const x = new Uint8Array(await res.arrayBuffer());
+        if (type == "Uint32Array") {
+            return new Uint32Array(x.buffer, 0, x.length/4);
+        }
+        return new Uint8Array(x.buffer, 0, x.length);
+    }
+
+    async function loadData() {\n`;
+
+    if (dataVariables.length > 0) {
+      const b64 = await this._encodeDataUrl(data.rawDataBlob);
+      // Store encoded data for messageRecording support
+      this._encodedData = [];
+      for (const dv of dataVariables) {
+        this._encodedData[dv.index] = b64;
+      }
+      s += `      const b64Data = "${b64}";\n`;
+      s += `      const dataBytes = await B64ToA("Uint8Array", ${data.rawDataBlob.byteLength}, b64Data);\n`;
+      for (const dv of dataVariables) {
+        const entry = data.dataTable[dv.index];
+        s += `      ${dv.varName} = new ${entry.type}(dataBytes.buffer, ${entry.offset}, ${entry.length / this._getTypeSize(entry.type)});\n`;
+      }
+    }
+
+    s += `
+        }
+        main();
+                </script>
+            </body>
+        </html>\n`;
+
+    return s;
+  }
+
+  _getTypeSize(type) {
+    const typeSizes = {
+      "Uint8Array": 1,
+      "Int8Array": 1,
+      "Uint16Array": 2,
+      "Int16Array": 2,
+      "Uint32Array": 4,
+      "Int32Array": 4,
+      "Float32Array": 4,
+      "Float64Array": 8,
+      "BigUint64Array": 8,
+      "BigInt64Array": 8
+    };
+    return typeSizes[type] || 1;
   }
 }
 
