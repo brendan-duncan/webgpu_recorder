@@ -2219,7 +2219,7 @@ export class WebGPURecorder {
     const argStr = args.length === 0 ? "" : args.map(convertArg).join(", ");
 
     if (cmd.result && cmd.result !== "undefined") {
-      return `${cmd.async}${cmd.result} = ${cmd.object}.${cmd.method}(${argStr});`;
+      return `${cmd.result} = ${cmd.async}${cmd.object}.${cmd.method}(${argStr});`;
     } else {
       return `${cmd.async}${cmd.object}.${cmd.method}(${argStr});`;
     }
