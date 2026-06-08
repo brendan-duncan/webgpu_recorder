@@ -150,6 +150,13 @@ export class WebGPURecorder {
 
     this._isRecording = true;
 
+    // Set once the recorder has fully detached from WebGPU (native methods/globals restored, overlay
+    // removed). Guards _detach against running twice.
+    this._detached = false;
+    // Canvases whose getContext we patched, kept as { canvas, getContext } so the original can be
+    // restored on detach.
+    this._wrappedCanvases = [];
+
     this._gpuWrapper = new GPUObjectWrapper(this);
     this._gpuWrapper.onPromiseResolve = this._onAsyncResolve.bind(this);
     this._gpuWrapper.onPreCall = this._preMethodCall.bind(this);
@@ -208,6 +215,7 @@ export class WebGPURecorder {
     // Capture any dynamically created canvases
     if (_document) {
       const __createElement = document.createElement;
+      this._originalCreateElement = __createElement;
       _document.createElement = function (type) {
         const element = __createElement.call(_document, type);
         if (type === "canvas") {
@@ -234,6 +242,7 @@ export class WebGPURecorder {
     // In stateful mode (recordMode 2) the recorder maintains a live model of all GPU objects so an
     // arbitrary frame can be captured at any time; see _statefulFrameStart / _beginFrameCapture.
     const __requestAnimationFrame = requestAnimationFrame;
+    this._originalRequestAnimationFrame = __requestAnimationFrame;
     requestAnimationFrame = function (cb) {
       function callback(timestamp) {
         self._frameStart(timestamp);
@@ -284,13 +293,93 @@ export class WebGPURecorder {
   // private:
   _createOverlayElement() {
     const statusContainer = _document.createElement("div");
-    statusContainer.style = "position: absolute; top: 0px; left: 0px; z-index: 1000000; margin-left: 10px; margin-top: 5px; padding-left: 5px; padding-right: 10px; background-color: rgba(0, 0, 1, 0.75); border-radius: 5px; box-shadow: 3px 3px 5px rgba(0, 0, 0, 0.5); color: #fff; font-size: 12pt;";
+    statusContainer.style = "position: absolute; top: 0px; left: 0px; z-index: 1000000; margin-left: 10px; margin-top: 5px; padding-left: 5px; padding-right: 10px; background-color: rgba(0, 0, 1, 0.75); border-radius: 5px; box-shadow: 3px 3px 5px rgba(0, 0, 0, 0.5); color: #fff; font-size: 12pt; display: flex; align-items: center;";
     _document.body.insertBefore(statusContainer, _document.body.firstChild);
+    this._statusContainer = statusContainer;
+
+    // Keyframes for the busy spinner shown while the recording is being generated. Inline styles
+    // can't declare keyframes, so inject a one-off style element (removed again on detach).
+    const style = _document.createElement("style");
+    style.textContent = "@keyframes webgpu-recorder-spin { to { transform: rotate(360deg); } }";
+    (_document.head || _document.body).appendChild(style);
+    this._overlayStyle = style;
 
     this._recordingStatus = _document.createElement("div");
+    statusContainer.appendChild(this._recordingStatus);
+
+    // Text label shown alongside the spinner while generating the recording data; hidden while
+    // recording is in progress.
+    this._statusLabel = _document.createElement("span");
+    this._statusLabel.style = "display: none; margin-left: 6px; white-space: nowrap;";
+    statusContainer.appendChild(this._statusLabel);
+
+    this._setOverlayRecording();
+  }
+
+  // Green "recording in progress" dot, label hidden.
+  _setOverlayRecording() {
+    if (!this._recordingStatus) {
+      return;
+    }
     this._recordingStatus.title = "WebGPU Recorder Running";
     this._recordingStatus.style = "height: 10px; width: 10px; display: inline-block; margin-right: 5px; background-color: #0f0; border-radius: 50%; border: 1px solid #000; box-shadow: inset -4px -4px 4px -3px rgb(255,100,0), 2px 2px 3px rgba(0,0,0,0.8);";
-    statusContainer.appendChild(this._recordingStatus);
+    if (this._statusLabel) {
+      this._statusLabel.style.display = "none";
+    }
+  }
+
+  // Spinning busy indicator with a label, shown while the recording data is generated, streamed to
+  // the inspector, and downloaded.
+  _setOverlayBusy() {
+    if (!this._recordingStatus) {
+      return;
+    }
+    this._recordingStatus.title = "WebGPU Recorder generating recording data";
+    this._recordingStatus.style = "height: 12px; width: 12px; display: inline-block; box-sizing: border-box; border: 2px solid rgba(255,255,255,0.35); border-top-color: #fff; border-radius: 50%; animation: webgpu-recorder-spin 0.8s linear infinite;";
+    if (this._statusLabel) {
+      this._statusLabel.textContent = "Generating recording data…";
+      this._statusLabel.style.display = "inline-block";
+    }
+  }
+
+  // Remove the page overlay entirely (used once the recorder has finished and detached).
+  _removeOverlayElement() {
+    if (this._statusContainer?.parentNode) {
+      this._statusContainer.parentNode.removeChild(this._statusContainer);
+    }
+    if (this._overlayStyle?.parentNode) {
+      this._overlayStyle.parentNode.removeChild(this._overlayStyle);
+    }
+    this._statusContainer = null;
+    this._recordingStatus = null;
+    this._statusLabel = null;
+    this._overlayStyle = null;
+  }
+
+  // Fully detach the recorder from the page once recording is complete: restore the native WebGPU
+  // prototype methods and the globals we patched (requestAnimationFrame, document.createElement,
+  // per-canvas getContext), then remove the overlay. After this the recorder imposes no further
+  // overhead on the page.
+  _detach() {
+    if (this._detached) {
+      return;
+    }
+    this._detached = true;
+
+    this._gpuWrapper._unwrapGPUTypes();
+
+    if (this._originalRequestAnimationFrame) {
+      requestAnimationFrame = this._originalRequestAnimationFrame;
+    }
+    if (_document && this._originalCreateElement) {
+      _document.createElement = this._originalCreateElement;
+    }
+    for (const { canvas, getContext } of this._wrappedCanvases) {
+      canvas.getContext = getContext;
+    }
+    this._wrappedCanvases.length = 0;
+
+    this._removeOverlayElement();
   }
 
   _frameStart(timestamp) {
@@ -1194,9 +1283,9 @@ export class WebGPURecorder {
       this._isRecording = false;
     }
 
-    if (this._recordingStatus) {
-      this._recordingStatus.style.backgroundColor = "#f00";
-    }
+    // Show a spinning busy indicator while the recording data is generated, streamed to the
+    // inspector, and downloaded.
+    this._setOverlayBusy();
 
     if (this.recordSingleFrame) {
       const lastFrameIndex = this._frameCommands.length - 1;
@@ -1295,6 +1384,13 @@ export class WebGPURecorder {
       }
 
       self._afterStatefulOutput();
+
+      // If recording is fully finished (not continuous stateful mode and no pending target frames),
+      // detach from WebGPU entirely so no further overhead is imposed on the page and remove the
+      // overlay. Otherwise the recorder stays attached for the next capture.
+      if (!self._isRecording) {
+        self._detach();
+      }
     });
   }
 
@@ -1306,9 +1402,7 @@ export class WebGPURecorder {
     }
     if (this.config.continuous || this._captureTargetFrames.size > 0) {
       this._rearmAfterCapture();
-      if (this._recordingStatus) {
-        this._recordingStatus.style.backgroundColor = "#0f0";
-      }
+      this._setOverlayRecording();
     } else {
       this._exporting = false;
     }
@@ -1440,6 +1534,7 @@ export class WebGPURecorder {
     this._registerObject(c);
     let self = this;
     let __getContext = c.getContext;
+    this._wrappedCanvases.push({ canvas: c, getContext: __getContext });
     c.getContext = function (a1, a2) {
       let ret = __getContext.call(c, a1, a2);
       if (a1 === "webgpu") {
@@ -2813,112 +2908,134 @@ class GPUObjectWrapper {
     this.onPromise = null;
     this.onPromiseResolve = null;
     this.skipRecord = 0;
+    // Records every prototype method we patch as { target, name, orig } so the recorder can fully
+    // detach (restore the native methods) once recording is finished, leaving zero per-call overhead.
+    this._wrappedFunctions = [];
     this._wrapGPUTypes();
   }
 
+  // Patch a single prototype method, remembering the original so it can be restored later.
+  _wrap(target, name) {
+    const orig = target[name];
+    this._wrappedFunctions.push({ target, name, orig });
+    target[name] = this._wrapMethod(name, orig);
+  }
+
   _wrapGPUTypes() {
-    GPU.prototype.requestAdapter = this._wrapMethod("requestAdapter", GPU.prototype.requestAdapter);
-    GPU.prototype.getPreferredFormat = this._wrapMethod("getPreferredFormat", GPU.prototype.getPreferredFormat);
+    const w = (target, name) => this._wrap(target, name);
 
-    GPUAdapter.prototype.requestDevice = this._wrapMethod("requestDevice", GPUAdapter.prototype.requestDevice);
+    w(GPU.prototype, "requestAdapter");
+    w(GPU.prototype, "getPreferredFormat");
 
-    GPUDevice.prototype.destroy = this._wrapMethod("destroy", GPUDevice.prototype.destroy);
-    GPUDevice.prototype.createBuffer = this._wrapMethod("createBuffer", GPUDevice.prototype.createBuffer);
-    GPUDevice.prototype.createTexture = this._wrapMethod("createTexture", GPUDevice.prototype.createTexture);
-    GPUDevice.prototype.createSampler = this._wrapMethod("createSampler", GPUDevice.prototype.createSampler);
-    GPUDevice.prototype.importExternalTexture = this._wrapMethod("importExternalTexture", GPUDevice.prototype.importExternalTexture);
-    GPUDevice.prototype.createBindGroupLayout = this._wrapMethod("createBindGroupLayout", GPUDevice.prototype.createBindGroupLayout);
-    GPUDevice.prototype.createPipelineLayout = this._wrapMethod("createPipelineLayout", GPUDevice.prototype.createPipelineLayout);
-    GPUDevice.prototype.createBindGroup = this._wrapMethod("createBindGroup", GPUDevice.prototype.createBindGroup);
-    GPUDevice.prototype.createShaderModule = this._wrapMethod("createShaderModule", GPUDevice.prototype.createShaderModule);
-    GPUDevice.prototype.createComputePipeline = this._wrapMethod("createComputePipeline", GPUDevice.prototype.createComputePipeline);
-    GPUDevice.prototype.createRenderPipeline = this._wrapMethod("createRenderPipeline", GPUDevice.prototype.createRenderPipeline);
-    GPUDevice.prototype.createComputePipelineAsync = this._wrapMethod("createComputePipelineAsync", GPUDevice.prototype.createComputePipelineAsync);
-    GPUDevice.prototype.createRenderPipelineAsync = this._wrapMethod("createRenderPipelineAsync", GPUDevice.prototype.createRenderPipelineAsync);
-    GPUDevice.prototype.createCommandEncoder = this._wrapMethod("createCommandEncoder", GPUDevice.prototype.createCommandEncoder);
-    GPUDevice.prototype.createRenderBundleEncoder = this._wrapMethod("createRenderBundleEncoder", GPUDevice.prototype.createRenderBundleEncoder);
-    GPUDevice.prototype.createQuerySet = this._wrapMethod("createQuerySet", GPUDevice.prototype.createQuerySet);
+    w(GPUAdapter.prototype, "requestDevice");
 
-    GPUBuffer.prototype.mapAsync = this._wrapMethod("mapAsync", GPUBuffer.prototype.mapAsync);
-    GPUBuffer.prototype.getMappedRange = this._wrapMethod("getMappedRange", GPUBuffer.prototype.getMappedRange);
-    GPUBuffer.prototype.unmap = this._wrapMethod("unmap", GPUBuffer.prototype.unmap);
-    GPUBuffer.prototype.destroy = this._wrapMethod("destroy", GPUBuffer.prototype.destroy);
+    w(GPUDevice.prototype, "destroy");
+    w(GPUDevice.prototype, "createBuffer");
+    w(GPUDevice.prototype, "createTexture");
+    w(GPUDevice.prototype, "createSampler");
+    w(GPUDevice.prototype, "importExternalTexture");
+    w(GPUDevice.prototype, "createBindGroupLayout");
+    w(GPUDevice.prototype, "createPipelineLayout");
+    w(GPUDevice.prototype, "createBindGroup");
+    w(GPUDevice.prototype, "createShaderModule");
+    w(GPUDevice.prototype, "createComputePipeline");
+    w(GPUDevice.prototype, "createRenderPipeline");
+    w(GPUDevice.prototype, "createComputePipelineAsync");
+    w(GPUDevice.prototype, "createRenderPipelineAsync");
+    w(GPUDevice.prototype, "createCommandEncoder");
+    w(GPUDevice.prototype, "createRenderBundleEncoder");
+    w(GPUDevice.prototype, "createQuerySet");
 
-    GPUTexture.prototype.createView = this._wrapMethod("createView", GPUTexture.prototype.createView);
-    GPUTexture.prototype.destroy = this._wrapMethod("destroy", GPUTexture.prototype.destroy);
+    w(GPUBuffer.prototype, "mapAsync");
+    w(GPUBuffer.prototype, "getMappedRange");
+    w(GPUBuffer.prototype, "unmap");
+    w(GPUBuffer.prototype, "destroy");
 
-    GPUShaderModule.prototype.getCompilationInfo = this._wrapMethod("getCompilationInfo", GPUShaderModule.prototype.getCompilationInfo);
+    w(GPUTexture.prototype, "createView");
+    w(GPUTexture.prototype, "destroy");
 
-    GPUComputePipeline.prototype.getBindGroupLayout = this._wrapMethod("getBindGroupLayout", GPUComputePipeline.prototype.getBindGroupLayout);
+    w(GPUShaderModule.prototype, "getCompilationInfo");
 
-    GPURenderPipeline.prototype.getBindGroupLayout = this._wrapMethod("getBindGroupLayout", GPURenderPipeline.prototype.getBindGroupLayout);
+    w(GPUComputePipeline.prototype, "getBindGroupLayout");
 
-    GPUCommandEncoder.prototype.beginRenderPass = this._wrapMethod("beginRenderPass", GPUCommandEncoder.prototype.beginRenderPass);
-    GPUCommandEncoder.prototype.beginComputePass = this._wrapMethod("beginComputePass", GPUCommandEncoder.prototype.beginComputePass);
-    GPUCommandEncoder.prototype.copyBufferToBuffer = this._wrapMethod("copyBufferToBuffer", GPUCommandEncoder.prototype.copyBufferToBuffer);
-    GPUCommandEncoder.prototype.copyBufferToTexture = this._wrapMethod("copyBufferToTexture", GPUCommandEncoder.prototype.copyBufferToTexture);
-    GPUCommandEncoder.prototype.copyTextureToBuffer = this._wrapMethod("copyTextureToBuffer", GPUCommandEncoder.prototype.copyTextureToBuffer);
-    GPUCommandEncoder.prototype.copyTextureToTexture = this._wrapMethod("copyTextureToTexture", GPUCommandEncoder.prototype.copyTextureToTexture);
-    GPUCommandEncoder.prototype.clearBuffer = this._wrapMethod("clearBuffer", GPUCommandEncoder.prototype.clearBuffer);
-    GPUCommandEncoder.prototype.resolveQuerySet = this._wrapMethod("resolveQuerySet", GPUCommandEncoder.prototype.resolveQuerySet);
-    GPUCommandEncoder.prototype.finish = this._wrapMethod("finish", GPUCommandEncoder.prototype.finish);
-    GPUCommandEncoder.prototype.pushDebugGroup = this._wrapMethod("pushDebugGroup", GPUCommandEncoder.prototype.pushDebugGroup);
-    GPUCommandEncoder.prototype.popDebugGroup = this._wrapMethod("popDebugGroup", GPUCommandEncoder.prototype.popDebugGroup);
-    GPUCommandEncoder.prototype.insertDebugMarker = this._wrapMethod("insertDebugMarker", GPUCommandEncoder.prototype.insertDebugMarker);
+    w(GPURenderPipeline.prototype, "getBindGroupLayout");
 
-    GPUComputePassEncoder.prototype.setPipeline = this._wrapMethod("setPipeline", GPUComputePassEncoder.prototype.setPipeline);
-    GPUComputePassEncoder.prototype.dispatchWorkgroups = this._wrapMethod("dispatchWorkgroups", GPUComputePassEncoder.prototype.dispatchWorkgroups);
-    GPUComputePassEncoder.prototype.dispatchWorkgroupsIndirect = this._wrapMethod("dispatchWorkgroupsIndirect", GPUComputePassEncoder.prototype.dispatchWorkgroupsIndirect);
-    GPUComputePassEncoder.prototype.end = this._wrapMethod("end", GPUComputePassEncoder.prototype.end);
-    GPUComputePassEncoder.prototype.setBindGroup = this._wrapMethod("setBindGroup", GPUComputePassEncoder.prototype.setBindGroup);
-    GPUComputePassEncoder.prototype.setBindGroup = this._wrapMethod("setBindGroup", GPUComputePassEncoder.prototype.setBindGroup);
-    GPUComputePassEncoder.prototype.pushDebugGroup = this._wrapMethod("pushDebugGroup", GPUComputePassEncoder.prototype.pushDebugGroup);
-    GPUComputePassEncoder.prototype.popDebugGroup = this._wrapMethod("popDebugGroup", GPUComputePassEncoder.prototype.popDebugGroup);
-    GPUComputePassEncoder.prototype.insertDebugMarker = this._wrapMethod("insertDebugMarker", GPUComputePassEncoder.prototype.insertDebugMarker);
+    w(GPUCommandEncoder.prototype, "beginRenderPass");
+    w(GPUCommandEncoder.prototype, "beginComputePass");
+    w(GPUCommandEncoder.prototype, "copyBufferToBuffer");
+    w(GPUCommandEncoder.prototype, "copyBufferToTexture");
+    w(GPUCommandEncoder.prototype, "copyTextureToBuffer");
+    w(GPUCommandEncoder.prototype, "copyTextureToTexture");
+    w(GPUCommandEncoder.prototype, "clearBuffer");
+    w(GPUCommandEncoder.prototype, "resolveQuerySet");
+    w(GPUCommandEncoder.prototype, "finish");
+    w(GPUCommandEncoder.prototype, "pushDebugGroup");
+    w(GPUCommandEncoder.prototype, "popDebugGroup");
+    w(GPUCommandEncoder.prototype, "insertDebugMarker");
 
-    GPURenderPassEncoder.prototype.setViewport = this._wrapMethod("setViewport", GPURenderPassEncoder.prototype.setViewport);
-    GPURenderPassEncoder.prototype.setScissorRect = this._wrapMethod("setScissorRect", GPURenderPassEncoder.prototype.setScissorRect);
-    GPURenderPassEncoder.prototype.setBlendConstant = this._wrapMethod("setBlendConstant", GPURenderPassEncoder.prototype.setBlendConstant);
-    GPURenderPassEncoder.prototype.setStencilReference = this._wrapMethod("setStencilReference", GPURenderPassEncoder.prototype.setStencilReference);
-    GPURenderPassEncoder.prototype.beginOcclusionQuery = this._wrapMethod("beginOcclusionQuery", GPURenderPassEncoder.prototype.beginOcclusionQuery);
-    GPURenderPassEncoder.prototype.endOcclusionQuery = this._wrapMethod("endOcclusionQuery", GPURenderPassEncoder.prototype.endOcclusionQuery);
-    GPURenderPassEncoder.prototype.executeBundles = this._wrapMethod("executeBundles", GPURenderPassEncoder.prototype.executeBundles);
-    GPURenderPassEncoder.prototype.end = this._wrapMethod("end", GPURenderPassEncoder.prototype.end);
-    GPURenderPassEncoder.prototype.setPipeline = this._wrapMethod("setPipeline", GPURenderPassEncoder.prototype.setPipeline);
-    GPURenderPassEncoder.prototype.setIndexBuffer = this._wrapMethod("setIndexBuffer", GPURenderPassEncoder.prototype.setIndexBuffer);
-    GPURenderPassEncoder.prototype.setVertexBuffer = this._wrapMethod("setVertexBuffer", GPURenderPassEncoder.prototype.setVertexBuffer);
-    GPURenderPassEncoder.prototype.draw = this._wrapMethod("draw", GPURenderPassEncoder.prototype.draw);
-    GPURenderPassEncoder.prototype.drawIndexed = this._wrapMethod("drawIndexed", GPURenderPassEncoder.prototype.drawIndexed);
-    GPURenderPassEncoder.prototype.drawIndirect = this._wrapMethod("drawIndirect", GPURenderPassEncoder.prototype.drawIndirect);
-    GPURenderPassEncoder.prototype.drawIndexedIndirect = this._wrapMethod("drawIndexedIndirect", GPURenderPassEncoder.prototype.drawIndexedIndirect);
-    GPURenderPassEncoder.prototype.setBindGroup = this._wrapMethod("setBindGroup", GPURenderPassEncoder.prototype.setBindGroup);
-    GPURenderPassEncoder.prototype.pushDebugGroup = this._wrapMethod("pushDebugGroup", GPURenderPassEncoder.prototype.pushDebugGroup);
-    GPURenderPassEncoder.prototype.popDebugGroup = this._wrapMethod("popDebugGroup", GPURenderPassEncoder.prototype.popDebugGroup);
-    GPURenderPassEncoder.prototype.insertDebugMarker = this._wrapMethod("insertDebugMarker", GPURenderPassEncoder.prototype.insertDebugMarker);
+    w(GPUComputePassEncoder.prototype, "setPipeline");
+    w(GPUComputePassEncoder.prototype, "dispatchWorkgroups");
+    w(GPUComputePassEncoder.prototype, "dispatchWorkgroupsIndirect");
+    w(GPUComputePassEncoder.prototype, "end");
+    w(GPUComputePassEncoder.prototype, "setBindGroup");
+    w(GPUComputePassEncoder.prototype, "pushDebugGroup");
+    w(GPUComputePassEncoder.prototype, "popDebugGroup");
+    w(GPUComputePassEncoder.prototype, "insertDebugMarker");
 
-    GPUQueue.prototype.submit = this._wrapMethod("submit", GPUQueue.prototype.submit);
-    GPUQueue.prototype.writeBuffer = this._wrapMethod("writeBuffer", GPUQueue.prototype.writeBuffer);
-    GPUQueue.prototype.writeTexture = this._wrapMethod("writeTexture", GPUQueue.prototype.writeTexture);
-    GPUQueue.prototype.copyExternalImageToTexture = this._wrapMethod("copyExternalImageToTexture", GPUQueue.prototype.copyExternalImageToTexture);
+    w(GPURenderPassEncoder.prototype, "setViewport");
+    w(GPURenderPassEncoder.prototype, "setScissorRect");
+    w(GPURenderPassEncoder.prototype, "setBlendConstant");
+    w(GPURenderPassEncoder.prototype, "setStencilReference");
+    w(GPURenderPassEncoder.prototype, "beginOcclusionQuery");
+    w(GPURenderPassEncoder.prototype, "endOcclusionQuery");
+    w(GPURenderPassEncoder.prototype, "executeBundles");
+    w(GPURenderPassEncoder.prototype, "end");
+    w(GPURenderPassEncoder.prototype, "setPipeline");
+    w(GPURenderPassEncoder.prototype, "setIndexBuffer");
+    w(GPURenderPassEncoder.prototype, "setVertexBuffer");
+    w(GPURenderPassEncoder.prototype, "draw");
+    w(GPURenderPassEncoder.prototype, "drawIndexed");
+    w(GPURenderPassEncoder.prototype, "drawIndirect");
+    w(GPURenderPassEncoder.prototype, "drawIndexedIndirect");
+    w(GPURenderPassEncoder.prototype, "setBindGroup");
+    w(GPURenderPassEncoder.prototype, "pushDebugGroup");
+    w(GPURenderPassEncoder.prototype, "popDebugGroup");
+    w(GPURenderPassEncoder.prototype, "insertDebugMarker");
 
-    GPUQuerySet.prototype.destroy = this._wrapMethod("destroy", GPUQuerySet.prototype.destroy);
+    w(GPUQueue.prototype, "submit");
+    w(GPUQueue.prototype, "writeBuffer");
+    w(GPUQueue.prototype, "writeTexture");
+    w(GPUQueue.prototype, "copyExternalImageToTexture");
 
-    GPUCanvasContext.prototype.configure = this._wrapMethod("configure", GPUCanvasContext.prototype.configure);
-    GPUCanvasContext.prototype.unconfigure = this._wrapMethod("unconfigure", GPUCanvasContext.prototype.unconfigure);
-    GPUCanvasContext.prototype.getCurrentTexture = this._wrapMethod("getCurrentTexture", GPUCanvasContext.prototype.getCurrentTexture);
+    w(GPUQuerySet.prototype, "destroy");
 
-    GPURenderBundleEncoder.prototype.draw = this._wrapMethod("draw", GPURenderBundleEncoder.prototype.draw);
-    GPURenderBundleEncoder.prototype.drawIndexed = this._wrapMethod("drawIndexed", GPURenderBundleEncoder.prototype.drawIndexed);
-    GPURenderBundleEncoder.prototype.drawIndirect = this._wrapMethod("drawIndirect", GPURenderBundleEncoder.prototype.drawIndirect);
-    GPURenderBundleEncoder.prototype.drawIndexedIndirect = this._wrapMethod("drawIndexedIndirect", GPURenderBundleEncoder.prototype.drawIndexedIndirect);
-    GPURenderBundleEncoder.prototype.finish = this._wrapMethod("finish", GPURenderBundleEncoder.prototype.finish);
-    GPURenderBundleEncoder.prototype.insertDebugMarker = this._wrapMethod("insertDebugMarker", GPURenderBundleEncoder.prototype.insertDebugMarker);
-    GPURenderBundleEncoder.prototype.popDebugGroup = this._wrapMethod("popDebugGroup", GPURenderBundleEncoder.prototype.popDebugGroup);
-    GPURenderBundleEncoder.prototype.pushDebugGroup = this._wrapMethod("pushDebugGroup", GPURenderBundleEncoder.prototype.pushDebugGroup);
-    GPURenderBundleEncoder.prototype.setBindGroup = this._wrapMethod("setBindGroup", GPURenderBundleEncoder.prototype.setBindGroup);
-    GPURenderBundleEncoder.prototype.setIndexBuffer = this._wrapMethod("setIndexBuffer", GPURenderBundleEncoder.prototype.setIndexBuffer);
-    GPURenderBundleEncoder.prototype.setPipeline = this._wrapMethod("setPipeline", GPURenderBundleEncoder.prototype.setPipeline);
-    GPURenderBundleEncoder.prototype.setVertexBuffer = this._wrapMethod("setVertexBuffer", GPURenderBundleEncoder.prototype.setVertexBuffer);
+    w(GPUCanvasContext.prototype, "configure");
+    w(GPUCanvasContext.prototype, "unconfigure");
+    w(GPUCanvasContext.prototype, "getCurrentTexture");
+
+    w(GPURenderBundleEncoder.prototype, "draw");
+    w(GPURenderBundleEncoder.prototype, "drawIndexed");
+    w(GPURenderBundleEncoder.prototype, "drawIndirect");
+    w(GPURenderBundleEncoder.prototype, "drawIndexedIndirect");
+    w(GPURenderBundleEncoder.prototype, "finish");
+    w(GPURenderBundleEncoder.prototype, "insertDebugMarker");
+    w(GPURenderBundleEncoder.prototype, "popDebugGroup");
+    w(GPURenderBundleEncoder.prototype, "pushDebugGroup");
+    w(GPURenderBundleEncoder.prototype, "setBindGroup");
+    w(GPURenderBundleEncoder.prototype, "setIndexBuffer");
+    w(GPURenderBundleEncoder.prototype, "setPipeline");
+    w(GPURenderBundleEncoder.prototype, "setVertexBuffer");
+  }
+
+  // Restore every patched prototype method to its native implementation. After this, GPU calls go
+  // straight to the browser with no recorder indirection. Iterated in reverse so any method patched
+  // more than once is restored to its true original.
+  _unwrapGPUTypes() {
+    for (let i = this._wrappedFunctions.length - 1; i >= 0; --i) {
+      const { target, name, orig } = this._wrappedFunctions[i];
+      target[name] = orig;
+    }
+    this._wrappedFunctions.length = 0;
   }
 
   _wrapMethod(method, origMethod) {
