@@ -2124,29 +2124,21 @@ export class WebGPURecorder {
         dataTable.push({ type: "", length: 0, offset: 0 });
         continue;
       }
-      // Align offset for this data type
+      // Align offset for this data type to ensure valid TypedArray view creation
       const typeSize = this._getTypeSize(a.type);
-      const alignedOffset = (offset + typeSize - 1) & ~(typeSize - 1); // Round up to typeSize multiple
-      const paddingNeeded = alignedOffset - offset;
+      const alignedOffset = (offset + typeSize - 1) & ~(typeSize - 1);
       offset = alignedOffset;
 
       const bytes = new Uint8Array(a.array.buffer, a.array.byteOffset, a.array.byteLength);
       dataTable.push({ type: a.type, length: bytes.byteLength, offset });
-      blobs.push(bytes);
+      blobs.push({ offset: alignedOffset, data: bytes });
       offset += bytes.byteLength;
     }
     const dataTotal = offset;
 
     const rawDataBlob = new Uint8Array(dataTotal);
-    let pos = 0;
-    for (let i = 0; i < this._arrayCache.length; ++i) {
-      const a = this._arrayCache[i];
-      if (!a || a.array === null || a.array === undefined || !referenced.has(i)) {
-        continue;
-      }
-      const entry = dataTable[i];
-      const bytes = new Uint8Array(a.array.buffer, a.array.byteOffset, a.array.byteLength);
-      rawDataBlob.set(bytes, entry.offset);
+    for (const blob of blobs) {
+      rawDataBlob.set(blob.data, blob.offset);
     }
 
     const init = this._initializeCommandObjects.filter((c) => !!c);
