@@ -1391,6 +1391,10 @@ export class WebGPURecorder {
       }
     } else if (method === "createTexture") {
       args[0].usage |= GPUTextureUsage.COPY_SRC;
+      // For stateful capture, also add COPY_DST so writeTexture can initialize texture contents
+      if (this._stateful) {
+        args[0].usage |= GPUTextureUsage.COPY_DST;
+      }
     } else if (method === "createBuffer") {
       // For stateful capture, force COPY_SRC so the buffer's contents can be read back at capture
       // time. MAP_READ may only be combined with COPY_DST, so those buffers can't be made readable
