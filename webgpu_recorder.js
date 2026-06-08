@@ -951,6 +951,10 @@ export class WebGPURecorder {
     if (cmd.object && this._usedObjectIds.has(cmd.object)) {
       return true;
     }
+    // Check if the created result is in the used set
+    if (cmd.result && cmd.result !== "undefined" && this._usedObjectIds.has(cmd.result)) {
+      return true;
+    }
     // Check if any object referenced in args is in the used set
     try {
       const args = JSON.parse(cmd.args);
