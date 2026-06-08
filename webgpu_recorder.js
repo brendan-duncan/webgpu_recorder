@@ -1018,7 +1018,13 @@ export class WebGPURecorder {
       if (!cmd || cmd === "\n") {
         continue;
       }
-      if (this.recordSingleFrame && navigatorGpuId && cmd.indexOf(navigatorGpuId) !== -1) {
+      // Always keep GPU object creation commands (createBuffer, createTexture, createBindGroup, etc.)
+      // These are needed for the frame to execute, regardless of _usedObjectIds
+      if (cmd.indexOf("create") !== -1 && cmd.indexOf("=") !== -1) {
+        newCommands.push(cmd);
+        newObjects.push(obj);
+        if (cmdObj) newCommandObjects.push(cmdObj);
+      } else if (this.recordSingleFrame && navigatorGpuId && cmd.indexOf(navigatorGpuId) !== -1) {
         newCommands.push(cmd);
         newObjects.push(obj);
         if (cmdObj) newCommandObjects.push(cmdObj);
