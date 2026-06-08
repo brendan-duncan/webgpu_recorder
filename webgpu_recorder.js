@@ -910,6 +910,15 @@ export class WebGPURecorder {
         commandObjects[i] = null;
         continue;
       }
+      // A creation command whose result is still used (cmdResultId not unused, per the check above)
+      // must be kept regardless of its args: the object it builds is needed, so every resource in
+      // its descriptor is needed too. The string-command pass (_removeUnusedCommands) only keys off
+      // each line's own object, never its args; without this guard the binary pass would strip a
+      // createBindGroup/createView whenever its descriptor referenced any object that lingered in an
+      // unused set, leaving setBindGroup pointing at a bind group that was never created.
+      if (this._isCreationCommandObject(cmd)) {
+        continue;
+      }
       // Check if any referenced objects in args are unused
       try {
         const args = JSON.parse(cmd.args);
@@ -2015,6 +2024,12 @@ export class WebGPURecorder {
             if (this._unusedTextureViews.has(value.__id)) {
               const texture = this._unusedTextureViews.get(value.__id);
               this._unusedTextures.delete(texture);
+              // The view is now used by this bind group; drop it from the unused-view map so its
+              // id isn't collected into unusedObjects (which would make removeUnusedResources strip
+              // the createView/createBindGroup command objects from the binary recording, leaving
+              // setBindGroup referencing a bind group that was never created). Mirrors the
+              // beginRenderPass branch below.
+              this._unusedTextureViews.delete(value.__id);
             }
             this._unusedTextures.delete(value.__id);
             this._unusedBuffers.delete(value.__id);
