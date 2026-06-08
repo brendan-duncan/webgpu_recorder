@@ -1109,6 +1109,27 @@ export class WebGPURecorder {
 
     if (this.recordSingleFrame) {
       const lastFrameIndex = this._frameCommands.length - 1;
+      // Collect GPU object creation commands from all frames and move to initialize block
+      for (let fi = 0; fi <= lastFrameIndex; fi++) {
+        const commands = this._frameCommands[fi] || [];
+        const commandObjs = this._frameCommandObjects[fi] || [];
+        for (let i = 0; i < commands.length; ++i) {
+          const cmd = commands[i];
+          const cmdObj = commandObjs[i];
+          if (!cmd || cmd === "\n") {
+            continue;
+          }
+          // Check if this is a GPU object creation command (contains "create")
+          if (cmd.indexOf("create") !== -1 && cmd.indexOf("=") !== -1) {
+            this._initializeCommands.push(cmd);
+            this._initializeObjects.push(this._frameObjects[fi]?.[i] || null);
+            if (cmdObj) {
+              this._initializeCommandObjects.push(cmdObj);
+            }
+          }
+        }
+      }
+      // Now keep only the last frame
       this._frameCommands = [this._frameCommands[lastFrameIndex]];
       this._frameObjects = [this._frameObjects[lastFrameIndex]];
       this._frameCommandObjects = [this._frameCommandObjects[lastFrameIndex]];
