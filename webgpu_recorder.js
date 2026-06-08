@@ -2260,21 +2260,14 @@ export class WebGPURecorder {
       frameLabel.style = "position: absolute; top: 10px; left: 10px; font-size: 24pt; color: #f00;";
       document.body.append(frameLabel);
       ${this._getVariableDeclarations(-1)}
-`;
-
-    for (const cmd of data.init) {
-      s += `      ${this._commandObjectToJavaScriptLine(cmd)}\n`;
-    }
+      ${this._initializeCommands.join("\n      ")}\n`;
 
     for (let fi = 0; fi < data.frames.length; ++fi) {
       s += `
       async function f${fi}() {
           ${this._getVariableDeclarations(fi)}
-`;
-      for (const cmd of data.frames[fi]) {
-        s += `          ${this._commandObjectToJavaScriptLine(cmd)}\n`;
-      }
-      s += `      }\n`;
+          ${this._frameCommands[fi].join("\n          ")}
+      }\n`;
     }
 
     s += `
