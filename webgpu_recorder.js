@@ -929,6 +929,64 @@ export class WebGPURecorder {
     this._frameObjects[frameIndex] = newObjects;
   }
 
+  _filterFrameCommandObjects(frameIndex) {
+    const commandObjects = this._frameCommandObjects[frameIndex];
+    const newCommandObjects = [];
+    for (let i = 0; i < commandObjects.length; ++i) {
+      const cmd = commandObjects[i];
+      if (!cmd) {
+        continue;
+      }
+      // Check if any object id in the command is in the used objects set
+      if (this._commandObjectUsesUsedObject(cmd)) {
+        newCommandObjects.push(cmd);
+      }
+    }
+    this._frameCommandObjects[frameIndex] = newCommandObjects;
+  }
+
+  _commandObjectUsesUsedObject(cmd) {
+    if (!cmd) return false;
+    // Check if the command's object is in the used set
+    if (cmd.object && this._usedObjectIds.has(cmd.object)) {
+      return true;
+    }
+    // Check if any object referenced in args is in the used set
+    try {
+      const args = JSON.parse(cmd.args);
+      if (this._containsUsedObjectId(args, this._usedObjectIds)) {
+        return true;
+      }
+    } catch (e) {
+      // If args can't be parsed, keep the command
+      return true;
+    }
+    return false;
+  }
+
+  _containsUsedObjectId(obj, usedObjects) {
+    if (!obj || typeof obj !== "object") {
+      return false;
+    }
+    if (Array.isArray(obj)) {
+      for (const item of obj) {
+        if (this._containsUsedObjectId(item, usedObjects)) {
+          return true;
+        }
+      }
+      return false;
+    }
+    if (obj.__id !== undefined && usedObjects.has(obj.__id)) {
+      return true;
+    }
+    for (const key in obj) {
+      if (this._containsUsedObjectId(obj[key], usedObjects)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   _commandUsesUsedObject(cmd) {
     if (!cmd) return false;
     if (cmd.indexOf("setCanvasSize") !== -1) {
@@ -948,22 +1006,27 @@ export class WebGPURecorder {
     const navigatorGpuId = navigator.gpu.__id;
     const newCommands = [];
     const newObjects = [];
+    const newCommandObjects = [];
     for (let i = 0; i < this._initializeCommands.length; ++i) {
       const cmd = this._initializeCommands[i];
       const obj = this._initializeObjects[i];
+      const cmdObj = this._initializeCommandObjects[i];
       if (!cmd || cmd === "\n") {
         continue;
       }
       if (this.recordSingleFrame && navigatorGpuId && cmd.indexOf(navigatorGpuId) !== -1) {
         newCommands.push(cmd);
         newObjects.push(obj);
+        if (cmdObj) newCommandObjects.push(cmdObj);
       } else if (this._commandUsesUsedObject(cmd)) {
         newCommands.push(cmd);
         newObjects.push(obj);
+        if (cmdObj) newCommandObjects.push(cmdObj);
       }
     }
     this._initializeCommands = newCommands;
     this._initializeObjects = newObjects;
+    this._initializeCommandObjects = newCommandObjects;
   }
 
 
@@ -1046,6 +1109,11 @@ export class WebGPURecorder {
       this._frameObjects = [this._frameObjects[lastFrameIndex]];
       this._frameCommandObjects = [this._frameCommandObjects[lastFrameIndex]];
       this._filterInitializeCommands();
+      // Also filter frame commands for single-frame mode
+      if (this._usedObjectIds.size > 0) {
+        this._filterFrameCommands(0);
+        this._filterFrameCommandObjects(0);
+      }
     }
 
     if (this.config.removeUnusedResources) {
