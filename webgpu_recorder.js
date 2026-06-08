@@ -2124,6 +2124,12 @@ export class WebGPURecorder {
         dataTable.push({ type: "", length: 0, offset: 0 });
         continue;
       }
+      // Align offset for this data type
+      const typeSize = this._getTypeSize(a.type);
+      const alignedOffset = (offset + typeSize - 1) & ~(typeSize - 1); // Round up to typeSize multiple
+      const paddingNeeded = alignedOffset - offset;
+      offset = alignedOffset;
+
       const bytes = new Uint8Array(a.array.buffer, a.array.byteOffset, a.array.byteLength);
       dataTable.push({ type: a.type, length: bytes.byteLength, offset });
       blobs.push(bytes);
@@ -2133,9 +2139,14 @@ export class WebGPURecorder {
 
     const rawDataBlob = new Uint8Array(dataTotal);
     let pos = 0;
-    for (const b of blobs) {
-      rawDataBlob.set(b, pos);
-      pos += b.byteLength;
+    for (let i = 0; i < this._arrayCache.length; ++i) {
+      const a = this._arrayCache[i];
+      if (!a || a.array === null || a.array === undefined || !referenced.has(i)) {
+        continue;
+      }
+      const entry = dataTable[i];
+      const bytes = new Uint8Array(a.array.buffer, a.array.byteOffset, a.array.byteLength);
+      rawDataBlob.set(bytes, entry.offset);
     }
 
     const init = this._initializeCommandObjects.filter((c) => !!c);
