@@ -90,6 +90,10 @@ export class WebGPURecorder {
     this._baseExportName = this.config.exportName;
     // True only while recording the commands of the target frame itself.
     this._isCapturingFrame = false;
+    // Number of frames already captured in the current recording session. Stays 0 until the first
+    // frame is captured; used to capture the initial resource state only once when merging multiple
+    // frames into a single recording (see _beginFrameCapture / _statefulFrameEnd).
+    this._sessionFrameCount = 0;
     // Live object registry: id -> { ref(WeakRef), type, seq, lines, lineObjects, commandObjs,
     //   deps(Set<id>), destroyed, collected }.
     this._objectRegistry = new Map();
@@ -136,6 +140,13 @@ export class WebGPURecorder {
     this._labelCounts = new Map();
 
     this._usedObjectIds = new Set();
+
+    // Variable names (ids) of objects derived from the canvas: the per-frame texture returned by
+    // context.getCurrentTexture() and any views created from it. These are transient (a fresh one is
+    // obtained every frame) so their creation must never be hoisted into the initialize block in
+    // single-frame mode — getCurrentTexture is not a "create*" command and so is not hoisted, which
+    // would leave a hoisted createView with an undefined receiver.
+    this._canvasObjectIds = new Set();
 
     this._isRecording = true;
 
@@ -401,6 +412,15 @@ export class WebGPURecorder {
 
       this._captureTargetFrames.delete(this._captureFrameNumber);
       this._renderedFrameCount++;
+      this._sessionFrameCount++;
+
+      // Merged multi-frame recording: when more than one frame is being captured, accumulate every
+      // captured frame into a single recording and only build/export it after the last one. The
+      // initial resource state is snapshotted once (at the first frame), and the captured frames
+      // replay in sequence from it.
+      if (this._multiCapture && this._captureTargetFrames.size > 0) {
+        return;
+      }
 
       // Build the initialize block from the live object registry (reachable objects in creation
       // order) followed by the resource-content readback commands captured at frame start.
@@ -426,9 +446,14 @@ export class WebGPURecorder {
     this._currentFrameObjects = null;
     this._currentFrameCommandObjects = null;
     this._frameIndex = -1;
-    this._readbackCommands = null;
-    this._readbackObjects = null;
-    this._readbackCommandObjects = null;
+    // Only drop the snapshotted initial state if this was the state-capturing (first) attempt. In a
+    // merged multi-frame session a later non-rendering rAF must not discard the initial state that
+    // was already captured with the first frame.
+    if (this._sessionFrameCount === 0) {
+      this._readbackCommands = null;
+      this._readbackObjects = null;
+      this._readbackCommandObjects = null;
+    }
   }
 
   // At the start of the target frame (before the app's frame callback runs), snapshot the current
@@ -436,44 +461,45 @@ export class WebGPURecorder {
   // commands in the initialize block, so the captured frame replays against correct state
   // regardless of whether that state came from host writes or earlier GPU passes.
   _beginFrameCapture() {
-    // When capturing multiple frames from config, suffix each output file with the frame number so
-    // the downloads don't collide.
-    if (this._multiCapture) {
-      this.config.exportName = `${this._baseExportName}_${this._captureFrameNumber}`;
-    }
+    // Snapshot the current contents of every live resource only for the first frame of a recording
+    // session. When merging multiple frames into one recording, the later frames replay in sequence
+    // from this single initial state, so they don't re-snapshot.
+    if (this._sessionFrameCount === 0) {
+      this._readbackCommands = [];
+      this._readbackObjects = [];
+      this._readbackCommandObjects = [];
 
-    this._readbackCommands = [];
-    this._readbackObjects = [];
-    this._readbackCommandObjects = [];
-
-    for (const id of this._creationOrder) {
-      const entry = this._objectRegistry.get(id);
-      if (!entry || entry.destroyed || entry.collected) {
-        continue;
-      }
-      const obj = entry.ref?.deref();
-      if (!obj) {
-        continue;
-      }
-      try {
-        if (obj instanceof GPUBuffer) {
-          this._readbackBuffer(obj);
-        } else if (obj instanceof GPUTexture) {
-          this._readbackTexture(obj);
+      for (const id of this._creationOrder) {
+        const entry = this._objectRegistry.get(id);
+        if (!entry || entry.destroyed || entry.collected) {
+          continue;
         }
-      } catch (e) {
-        // A busy/mapped/incompatible resource can't be snapshotted; skip it rather than aborting
-        // the whole capture.
-        console.warn(`webgpu_recorder: failed to snapshot ${obj.__id}: ${e.message}`);
-        if (this._gpuWrapper.skipRecord > 0) {
-          this._gpuWrapper.skipRecord = 0;
+        const obj = entry.ref?.deref();
+        if (!obj) {
+          continue;
+        }
+        try {
+          if (obj instanceof GPUBuffer) {
+            this._readbackBuffer(obj);
+          } else if (obj instanceof GPUTexture) {
+            this._readbackTexture(obj);
+          }
+        } catch (e) {
+          // A busy/mapped/incompatible resource can't be snapshotted; skip it rather than aborting
+          // the whole capture.
+          console.warn(`webgpu_recorder: failed to snapshot ${obj.__id}: ${e.message}`);
+          if (this._gpuWrapper.skipRecord > 0) {
+            this._gpuWrapper.skipRecord = 0;
+          }
         }
       }
     }
 
     this._isCapturingFrame = true;
-    this._frameIndex = 0;
-    this._frameVariables[0] = new Set();
+    // Place this frame in its own slot so a merged multi-frame recording keeps each captured frame
+    // (and its per-frame variable scope) distinct.
+    this._frameIndex = this._frameCommands.length;
+    this._frameVariables[this._frameIndex] = new Set();
     this._currentFrameCommands = [];
     this._currentFrameObjects = [];
     this._currentFrameCommandObjects = [];
@@ -498,6 +524,7 @@ export class WebGPURecorder {
     this._readbackCommands = null;
     this._readbackObjects = null;
     this._readbackCommandObjects = null;
+    this._sessionFrameCount = 0;
     // Note: _captureTargetFrames is intentionally preserved (the captured frame was already removed
     // from it); remaining entries are still pending, and runtime triggers may add more.
     this._exporting = false;
@@ -845,6 +872,15 @@ export class WebGPURecorder {
     this._initializeCommands = initCommands;
     this._initializeObjects = initObjects;
     this._initializeCommandObjects = initCommandObjects;
+    // Keep any variable names already promoted to the initialize scope (e.g. a resource created
+    // during one captured frame and reused in a later one in a merged multi-frame recording), so
+    // the generated HTML still declares them, in addition to the live registry objects.
+    const promoted = this._frameVariables[-1];
+    if (promoted) {
+      for (const name of promoted) {
+        declared.add(name);
+      }
+    }
     this._frameVariables[-1] = declared;
   }
 
@@ -1006,15 +1042,42 @@ export class WebGPURecorder {
     return false;
   }
 
+  // True if a command object creates a persistent GPU object (createBuffer, createTexture,
+  // createBindGroup, etc.). This is the command-object analogue of the `cmd.indexOf("create") &&
+  // cmd.indexOf("=")` test used on the string commands: a creation command names a "create*" method
+  // and assigns the result to a variable.
+  _isCreationCommandObject(cmdObj) {
+    return !!cmdObj && typeof cmdObj.method === "string" &&
+      cmdObj.method.indexOf("create") !== -1 &&
+      !!cmdObj.result && cmdObj.result !== "undefined";
+  }
+
+  // True if a string command assigns its result to a canvas-derived variable (the per-frame
+  // getCurrentTexture texture or a view of it). Such creations are transient and must not be hoisted
+  // into the initialize block. The assignment form is `${resultVar} = ...`.
+  _isCanvasDerivedLine(cmd) {
+    if (this._canvasObjectIds.size === 0) {
+      return false;
+    }
+    const eq = cmd.indexOf("=");
+    if (eq === -1) {
+      return false;
+    }
+    const resultVar = cmd.slice(0, eq).trim();
+    return this._canvasObjectIds.has(resultVar);
+  }
+
   _filterInitializeCommands() {
     const navigatorGpuId = navigator.gpu.__id;
+
+    // The string commands and command objects are not index-aligned (see the note in
+    // generateOutput), so each list is filtered independently with the test appropriate to its
+    // representation rather than paired by index.
     const newCommands = [];
     const newObjects = [];
-    const newCommandObjects = [];
     for (let i = 0; i < this._initializeCommands.length; ++i) {
       const cmd = this._initializeCommands[i];
       const obj = this._initializeObjects[i];
-      const cmdObj = this._initializeCommandObjects[i];
       if (!cmd || cmd === "\n") {
         continue;
       }
@@ -1023,19 +1086,32 @@ export class WebGPURecorder {
       if (cmd.indexOf("create") !== -1 && cmd.indexOf("=") !== -1) {
         newCommands.push(cmd);
         newObjects.push(obj);
-        if (cmdObj) newCommandObjects.push(cmdObj);
       } else if (this.recordSingleFrame && navigatorGpuId && cmd.indexOf(navigatorGpuId) !== -1) {
         newCommands.push(cmd);
         newObjects.push(obj);
-        if (cmdObj) newCommandObjects.push(cmdObj);
       } else if (this._commandUsesUsedObject(cmd)) {
         newCommands.push(cmd);
         newObjects.push(obj);
-        if (cmdObj) newCommandObjects.push(cmdObj);
       }
     }
     this._initializeCommands = newCommands;
     this._initializeObjects = newObjects;
+
+    const newCommandObjects = [];
+    for (let i = 0; i < this._initializeCommandObjects.length; ++i) {
+      const cmdObj = this._initializeCommandObjects[i];
+      if (!cmdObj) {
+        continue;
+      }
+      // Always keep object creation commands, mirroring the string-command branch above.
+      if (this._isCreationCommandObject(cmdObj)) {
+        newCommandObjects.push(cmdObj);
+      } else if (this._commandObjectUsesUsedObject(cmdObj)) {
+        // Covers both the navigator.gpu special case (its id is in _usedObjectIds in single-frame
+        // mode) and any command referencing a used object.
+        newCommandObjects.push(cmdObj);
+      }
+    }
     this._initializeCommandObjects = newCommandObjects;
   }
 
@@ -1115,23 +1191,33 @@ export class WebGPURecorder {
 
     if (this.recordSingleFrame) {
       const lastFrameIndex = this._frameCommands.length - 1;
-      // Collect GPU object creation commands from all frames and move to initialize block
+      // Collect GPU object creation commands from all frames and move to initialize block.
+      // The string commands (_frameCommands, consumed by the HTML output) and the command objects
+      // (_frameCommandObjects, consumed by the binary/message output) are NOT index-aligned: a
+      // single recorded command can emit several string lines (the "\n" pass separators, the
+      // requiredFeatures/requiredLimits blocks, the empty submit line, setCanvasSize) but only one
+      // command object. So each representation must be scanned independently with its own creation
+      // test, never paired by index, otherwise the binary output collects the wrong objects (e.g. a
+      // setBindGroup instead of the createBindGroup, leaving the bind group's creation missing).
       for (let fi = 0; fi <= lastFrameIndex; fi++) {
         const commands = this._frameCommands[fi] || [];
-        const commandObjs = this._frameCommandObjects[fi] || [];
+        const objects = this._frameObjects[fi] || [];
         for (let i = 0; i < commands.length; ++i) {
           const cmd = commands[i];
-          const cmdObj = commandObjs[i];
           if (!cmd || cmd === "\n") {
             continue;
           }
           // Check if this is a GPU object creation command (contains "create")
-          if (cmd.indexOf("create") !== -1 && cmd.indexOf("=") !== -1) {
+          if (cmd.indexOf("create") !== -1 && cmd.indexOf("=") !== -1 && !this._isCanvasDerivedLine(cmd)) {
             this._initializeCommands.push(cmd);
-            this._initializeObjects.push(this._frameObjects[fi]?.[i] || null);
-            if (cmdObj) {
-              this._initializeCommandObjects.push(cmdObj);
-            }
+            this._initializeObjects.push(objects[i] || null);
+          }
+        }
+        const commandObjs = this._frameCommandObjects[fi] || [];
+        for (let i = 0; i < commandObjs.length; ++i) {
+          const cmdObj = commandObjs[i];
+          if (this._isCreationCommandObject(cmdObj) && !this._canvasObjectIds.has(cmdObj.result)) {
+            this._initializeCommandObjects.push(cmdObj);
           }
         }
       }
@@ -1175,7 +1261,7 @@ export class WebGPURecorder {
     const wantBinary = this.config.output === "binary" || this.config.output === "both";
 
     const self = this;
-    Promise.all(this._externalImageBufferPromises).then(() => {
+    Promise.all(this._externalImageBufferPromises).then(async () => {
       self._externalImageBufferPromises.length = 0;
 
       // Build unified binary data once (consolidates all data handling)
@@ -1187,15 +1273,19 @@ export class WebGPURecorder {
         self._downloadBinary(self._serializeBinaryContainer(binaryData), exportName + ".wgpu");
       }
 
+      // Stream the recording to any connected viewer (e.g. the inspector's recorder panel). This is
+      // independent of the output format, so a binary-only recording still updates the viewer.
+      if (self.config.messageRecording) {
+        await self._sendRecordingMessages(binaryData);
+      }
+
       // Generate and download HTML if needed
       if (wantHtml) {
-        self._generateHtmlFromBinaryData(binaryData).then((html) => {
-          self._downloadFile(html, exportName + ".html");
-          self._afterStatefulOutput();
-        });
-      } else {
-        self._afterStatefulOutput();
+        const html = await self._generateHtmlFromBinaryData(binaryData);
+        self._downloadFile(html, exportName + ".html");
       }
+
+      self._afterStatefulOutput();
     });
   }
 
@@ -1259,45 +1349,56 @@ export class WebGPURecorder {
         _postMessage({ type: "webgpu_record_download", data, filename });
       }
     }
+  }
 
-    if (this.config.messageRecording) {
-      this._initializeCommandObjects = this._initializeCommandObjects.filter((value) => !!value);
-      let count = this._initializeCommandObjects.length;
-      for (let i = 0; i < this._frameCommandObjects.length; ++i) {
-        this._frameCommandObjects[i] = this._frameCommandObjects[i].filter((value) => !!value);
-        count += this._frameCommandObjects[i].length;
+  // Stream the recording (commands + data) to a connected viewer via the messageRecording channel.
+  // Driven from the unified binary data so it runs for any output format, including binary-only.
+  // Each referenced data slot is sent as its own data-URL slice, matching the per-blob layout the
+  // viewer reconstructs when loading a .wgpu file.
+  async _sendRecordingMessages(binaryData) {
+    this._encodedData = [];
+    for (let i = 0; i < binaryData.dataTable.length; ++i) {
+      const entry = binaryData.dataTable[i];
+      if (!entry || entry.type === "" || !entry.length) {
+        continue;
       }
+      const slice = binaryData.rawDataBlob.subarray(entry.offset, entry.offset + entry.length);
+      this._encodedData[i] = await this._encodeDataUrl(slice);
+    }
 
-      this._dispatchEvent({ action: "webgpu_record_data_count", count: this._arrayCache.length });
+    this._initializeCommandObjects = this._initializeCommandObjects.filter((value) => !!value);
+    let count = this._initializeCommandObjects.length;
+    for (let i = 0; i < this._frameCommandObjects.length; ++i) {
+      this._frameCommandObjects[i] = this._frameCommandObjects[i].filter((value) => !!value);
+      count += this._frameCommandObjects[i].length;
+    }
 
-      let index = 0;
-      let frame = -1;
-      const action = "webgpu_record_command";
-      for (let i = 0; i < this._initializeCommandObjects.length; ++i) {
-        const command = this._initializeCommandObjects[i];
-        this._dispatchEvent({ action, command, commandIndex: i, frame, index, count });
+    this._dispatchEvent({ action: "webgpu_record_data_count", count: this._arrayCache.length });
+
+    let index = 0;
+    let frame = -1;
+    const action = "webgpu_record_command";
+    for (let i = 0; i < this._initializeCommandObjects.length; ++i) {
+      const command = this._initializeCommandObjects[i];
+      this._dispatchEvent({ action, command, commandIndex: i, frame, index, count });
+      index++;
+    }
+
+    for (frame = 0; frame < this._frameCommandObjects.length; ++frame) {
+      const commands = this._frameCommandObjects[frame];
+      for (let j = 0; j < commands.length; ++j) {
+        const command = commands[j];
+        this._dispatchEvent({ action, command, commandIndex: j, frame, index, count });
         index++;
       }
+    }
 
-      for (frame = 0; frame < this._frameCommandObjects.length; ++frame) {
-        const commands = this._frameCommandObjects[frame];
-        for (let j = 0; j < commands.length; ++j) {
-          const command = commands[j];
-          this._dispatchEvent({ action, command, commandIndex: j, frame, index, count });
-          index++;
-        }
-      }
-
-      {
-        const count = this._arrayCache.length;
-        const action = "webgpu_record_data";
-        for (let index = 0; index < count; ++index) {
-          const a = this._arrayCache[index];
-          const size = a.length;
-          const type = a.type;
-          const data = this._encodedData[index];
-          this._dispatchEvent({ action, data, type, size, index, count });
-        }
+    {
+      const dataCount = this._arrayCache.length;
+      const dataAction = "webgpu_record_data";
+      for (let i = 0; i < dataCount; ++i) {
+        const a = this._arrayCache[i];
+        this._dispatchEvent({ action: dataAction, data: this._encodedData[i], type: a.type, size: a.length, index: i, count: dataCount });
       }
     }
 
@@ -2094,11 +2195,21 @@ export class WebGPURecorder {
 
     let obj = object;
 
-    if (method === "createTexture") {
+    if (method === "getCurrentTexture") {
+      // The canvas's per-frame texture; mark it (and below, any view of it) as transient so its
+      // creation is not hoisted to the initialize block in single-frame mode.
+      if (result && result.__id) {
+        this._canvasObjectIds.add(result.__id);
+      }
+    } else if (method === "createTexture") {
       this._unusedTextures.add(result.__id);
       obj = result;
     } else if (method === "createView") {
       this._unusedTextureViews.set(result.__id, object.__id);
+      // A view of a canvas texture is itself canvas-derived (and transient).
+      if (object && object.__id && this._canvasObjectIds.has(object.__id) && result && result.__id) {
+        this._canvasObjectIds.add(result.__id);
+      }
     } else if (method === "writeTexture") {
       obj = args[0].texture;
     } else if (method === "createBuffer") {
@@ -2432,11 +2543,6 @@ export class WebGPURecorder {
 
     if (dataVariables.length > 0) {
       const b64 = await this._encodeDataUrl(data.rawDataBlob);
-      // Store encoded data for messageRecording support
-      this._encodedData = [];
-      for (const dv of dataVariables) {
-        this._encodedData[dv.index] = b64;
-      }
       s += `      const b64Data = "${b64}";\n`;
       s += `      const dataBytes = await B64ToA("Uint8Array", ${data.rawDataBlob.byteLength}, b64Data);\n`;
       for (const dv of dataVariables) {
